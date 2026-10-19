@@ -235,7 +235,9 @@ with notes_bonds_tab:
             y.metric(f"Prior {tail_window} average (bps)", f"{preceding.tail_bps.mean():+.2f}" if not preceding.empty else "N/A")
             z.metric("Prior observations", str(len(preceding)))
             st.caption(f"Latest recorded tail: {current.auction_date:%d/%m/%Y}. The historical average excludes that auction. A negative tail is a stop-through.")
-            st.dataframe(tail_history[["auction_date", "tail_bps"]].rename(columns={"auction_date": "Auction date", "tail_bps": "Tail / stop-through (bps)"}), hide_index=True, width="stretch")
+            tail_table = tail_history[["auction_date", "tail_bps"]].rename(columns={"auction_date": "Auction date", "tail_bps": "Tail / stop-through (bps)"}).copy()
+            tail_table["Auction date"] = tail_table["Auction date"].dt.strftime("%d/%m/%Y")
+            st.dataframe(tail_table, hide_index=True, width="stretch")
         show_auction_table(visible_nb, f"{selected_note_bond} auction history", "treasury_notes_bonds_auctions.csv")
     else:
         st.info("No note or bond maturities are available.")
