@@ -2,12 +2,32 @@ import streamlit as st
 import pandas as pd
 import requests
 from datetime import date, timedelta
+import re
 
 st.set_page_config(page_title="Treasury Auction Dashboard", layout="wide")
 API = "https://api.fiscaldata.treasury.gov/services/api/fiscal_service/v1/accounting/od/auctions_query"
 FIELDS = ["cusip","auction_date","security_type","security_term","inflation_index_security","floating_rate","offering_amt","primary_dealer_accepted","direct_bidder_accepted","indirect_bidder_accepted","comp_accepted","high_yield","high_discnt_rate","bid_to_cover_ratio"]
 AMOUNTS = ["offering_amt","primary_dealer_accepted","direct_bidder_accepted","indirect_bidder_accepted"]
 NUMERIC = AMOUNTS + ["comp_accepted","high_yield","high_discnt_rate","bid_to_cover_ratio"]
+
+def canonical_security(row):
+    """Group reopened coupon securities by their original benchmark tenor."""
+    term = str(row["security_term"] or "").strip()
+    kind = row["security_type"]
+    if kind == "Bill":
+        return f"{term} Bill".strip()
+    match = re.match(r"^(\\d+)-Year(?:\\s+(\\d+)-Month)?$", term, re.IGNORECASE)
+    if not match:
+        return f"{term} {kind}".strip()
+    years = int(match.group(1))
+    months = int(match.group(2) or 0)
+    if months == 0 and years in (2, 3, 5, 7, 10, 20, 30):
+        tenor = years
+    elif months in (10, 11) and years + 1 in (2, 3, 5, 7, 10, 20, 30):
+        tenor = years + 1
+    else:
+        return f"{term} {kind}".strip()
+    return f"{tenor}-Year {kind}"
 
 @st.cache_data(ttl=900)
 def load(days):
@@ -34,8 +54,7 @@ def load(days):
     for flag in ["inflation_index_security","floating_rate"]:
         df = df[~df[flag].fillna("").astype(str).str.lower().isin(["yes","true","1"])]
     df = df[df["bid_to_cover_ratio"].notna()].copy()
-    df["Security"] = df["security_term"].fillna("")+" "+df["security_type"]
-    df["Security"] = df["Security"].str.strip()
+    df["Security"] = df.apply(canonical_security, axis=1)
     for label,field in [("Dealer %","primary_dealer_accepted"),("Direct %","direct_bidder_accepted"),("Indirect %","indirect_bidder_accepted")]:
         df[label] = df[field]/df["comp_accepted"].where(df["comp_accepted"]>0)*100
     df["High rate %"] = df["high_discnt_rate"].where(df["security_type"].eq("Bill"),df["high_yield"])
@@ -101,10 +120,10 @@ with notes_bonds_tab:
 
 with averages:
     st.subheader("Latest auction vs preceding six auctions")
-    st.caption("Benchmarks use up to six preceding auctions of the same security term, including reopenings. Benchmark history is independent of the recent-auction date filters.")
+    st.caption("Benchmarks group original issues and 10/11-month reopenings by benchmark tenor (e.g. 19-Year 10-Month and 19-Year 11-Month with 20-Year). Benchmark history is independent of recent-auction date filters.")
     metrics = {"Dealer %":"Dealer %","Direct %":"Direct %","Indirect %":"Indirect %","High rate %":"High rate %","Bid-to-cover":"bid_to_cover_ratio","Offering (USD bln)":"offering_amt","Dealer accepted (USD bln)":"primary_dealer_accepted","Direct accepted (USD bln)":"direct_bidder_accepted","Indirect accepted (USD bln)":"indirect_bidder_accepted"}
     records=[]
-    for (kind,term),group in data.groupby(["security_type","security_term"]):
+    for (kind,term),group in data.groupby(["security_type","Security"]):
         group=group.sort_values("auction_date",ascending=False)
         latest=group.iloc[0]
         if kind not in kinds or (kind == "Bill" and latest.Security not in selected_bills) or (kind in ["Note", "Bond"] and latest.Security not in selected_note_bonds):
