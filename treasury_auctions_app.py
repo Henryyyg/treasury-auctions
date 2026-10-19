@@ -68,7 +68,8 @@ if data.empty:
     st.stop()
 with st.sidebar:
     kinds = st.multiselect("Security types",["Bill","Note","Bond"],default=["Bill","Note","Bond"])
-    securities = st.multiselect("Security maturities (optional)",sorted(data[data.security_type.isin(kinds)]["Security"].unique()))
+    st.caption("Choose maturities separately inside the Bills and Notes & Bonds tabs.")
+    securities = []
     dates = st.date_input("Auction date range",(max(data.auction_date.min().date(),date.today()-timedelta(days=90)),date.today()),min_value=data.auction_date.min().date(),max_value=date.today())
 filtered = data[data.security_type.isin(kinds)].copy()
 if securities:
@@ -86,10 +87,16 @@ def show_auction_table(frame, label, filename):
     st.download_button("Download CSV", output.to_csv(index=False).encode("utf-8-sig"), filename, "text/csv")
 
 with bills_tab:
-    show_auction_table(filtered[filtered["security_type"].eq("Bill")], "Treasury bill auctions", "treasury_bill_auctions.csv")
+    bill_data = filtered[filtered["security_type"].eq("Bill")]
+    bill_terms = sorted(bill_data["Security"].dropna().unique().tolist())
+    selected_bills = st.multiselect("Filter bill maturities", bill_terms, default=bill_terms, key="bill_maturity_filter")
+    show_auction_table(bill_data[bill_data["Security"].isin(selected_bills)], "Treasury bill auctions", "treasury_bill_auctions.csv")
 
 with notes_bonds_tab:
-    show_auction_table(filtered[filtered["security_type"].isin(["Note", "Bond"])], "Treasury note and bond auctions", "treasury_notes_bonds_auctions.csv")
+    note_bond_data = filtered[filtered["security_type"].isin(["Note", "Bond"])]
+    note_bond_terms = sorted(note_bond_data["Security"].dropna().unique().tolist())
+    selected_note_bonds = st.multiselect("Filter note and bond maturities", note_bond_terms, default=note_bond_terms, key="note_bond_maturity_filter")
+    show_auction_table(note_bond_data[note_bond_data["Security"].isin(selected_note_bonds)], "Treasury note and bond auctions", "treasury_notes_bonds_auctions.csv")
 
 with averages:
     st.subheader("Latest auction vs preceding six auctions")
@@ -99,7 +106,7 @@ with averages:
     for (kind,term),group in data.groupby(["security_type","security_term"]):
         group=group.sort_values("auction_date",ascending=False)
         latest=group.iloc[0]
-        if kind not in kinds or (securities and latest.Security not in securities):
+        if kind not in kinds or (kind == "Bill" and latest.Security not in selected_bills) or (kind in ["Note", "Bond"] and latest.Security not in selected_note_bonds):
             continue
         prior=group.iloc[1:7]
         if prior.empty:
