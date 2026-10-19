@@ -3,6 +3,7 @@ import pandas as pd
 import requests
 from datetime import date, timedelta
 import re
+from pathlib import Path
 
 st.set_page_config(page_title="Treasury Auction Dashboard", layout="wide")
 API = "https://api.fiscaldata.treasury.gov/services/api/fiscal_service/v1/accounting/od/auctions_query"
@@ -81,6 +82,22 @@ def load(days, schema_version=6):
     df["Rate basis"] = df["security_type"].map({"Bill":"Discount rate","Note":"Yield","Bond":"Yield"})
     return df.sort_values("auction_date",ascending=False).drop_duplicates(["cusip","auction_date"])
 
+@st.cache_data(ttl=900)
+def load_tails():
+    """Monthly nominal auction tails from the Auction Tails master worksheet."""
+    path = Path(__file__).with_name("auction_tails.csv")
+    tails = pd.read_csv(path, dtype={"auction_month": str, "Security": str})
+    tails["tail_bps"] = pd.to_numeric(tails["tail_bps"], errors="coerce")
+    return tails.dropna(subset=["tail_bps"]).drop_duplicates(["auction_month", "Security"], keep="last")
+
+def add_tails(frame):
+    """Match monthly source data to the official auction date and benchmark tenor."""
+    result = frame.copy()
+    result["auction_month"] = result["auction_date"].dt.strftime("%Y-%m")
+    result = result.merge(load_tails(), how="left", on=["auction_month", "Security"], validate="many_to_one")
+    result.loc[result["security_type"].eq("Bill"), "tail_bps"] = float("nan")
+    return result
+
 def table(df):
     names = {"auction_date":"Auction date","offering_amt":"Offering (USD bln)","primary_dealer_accepted":"Dealer accepted (USD bln)","direct_bidder_accepted":"Direct accepted (USD bln)","indirect_bidder_accepted":"Indirect accepted (USD bln)","High rate %":"High yield / discount rate (%)","bid_to_cover_ratio":"Bid-to-cover"}
     columns = ["auction_date","Security","offering_amt","primary_dealer_accepted","Dealer %","direct_bidder_accepted","Direct %","indirect_bidder_accepted","Indirect %","High rate %","bid_to_cover_ratio","Rate basis"]
@@ -127,6 +144,7 @@ METRICS = {
     "Dealer %": "Dealer %",
     "High yield / discount rate (%)": "High rate %",
     "Offering (USD bln)": "offering_amt",
+    "Tail / stop-through (bps)": "tail_bps",
 }
 SCALE = {"offering_amt": 1e9}
 
@@ -142,7 +160,8 @@ def show_history_analysis(frame, widget_key):
     if frame.empty:
         st.info("No auctions available for this maturity and date range.")
         return
-    metric = st.selectbox("Chart metric", list(METRICS), key=f"{widget_key}_metric")
+    available_metrics = [m for m in METRICS if METRICS[m] != "tail_bps" or frame["tail_bps"].notna().any()]
+    metric = st.selectbox("Chart metric", available_metrics, key=f"{widget_key}_metric")
     history_count = st.selectbox("Chart history", [12, 24, 52, 104], index=1, format_func=lambda n: f"Last {n} auctions", key=f"{widget_key}_history")
     moving_count = st.selectbox("Moving average", [3, 6, 10, 12], index=1, format_func=lambda n: f"{n} auctions", key=f"{widget_key}_moving")
     field = METRICS[metric]
@@ -163,10 +182,10 @@ def show_history_analysis(frame, widget_key):
     previous = valid.iloc[1:] / scale
     percentile = 100 * (previous.lt(latest_value).sum() + 0.5 * previous.eq(latest_value).sum()) / len(previous)
     a, b, d = st.columns(3)
-    a.metric(f"Latest {metric}", f"{latest_value:,.2f}")
+    a.metric(f"Latest available {metric}", f"{latest_value:,.2f}")
     b.metric("Historical percentile", f"{percentile:.0f}th")
     d.metric("Previous observations", f"{len(previous):,}")
-    st.caption("Percentile compares the latest auction with all earlier loaded auctions for the selected benchmark; 100th means a higher numerical reading than all previous observations. A higher yield or dealer take-down does not necessarily mean stronger demand. Ties receive half credit.")
+    st.caption("Percentile compares the latest available observation for this metric with earlier observations for the benchmark; 100th means a higher numerical reading. For tails, LOWER is stronger. A higher yield or dealer take-down does not necessarily mean stronger demand. Ties receive half credit.")
 
 with bills_tab:
     st.subheader("Treasury bills")
@@ -191,7 +210,7 @@ with bills_tab:
 
 with notes_bonds_tab:
     st.subheader("Treasury notes & bonds")
-    nb_pool = data[data["security_type"].isin(["Note", "Bond"]) & data["security_type"].isin(kinds)].copy()
+    nb_pool = add_tails(data[data["security_type"].isin(["Note", "Bond"]) & data["security_type"].isin(kinds)].copy())
     nb_options = sorted(nb_pool["Security"].dropna().unique().tolist(),
                         key=lambda s: (int(re.search(r"[0-9]+", s).group()) if re.search(r"[0-9]+", s) else 999, s))
     selected_note_bond = st.selectbox("Select note or bond maturity", nb_options,
@@ -200,7 +219,22 @@ with notes_bonds_tab:
     if selected_note_bond:
         chosen_nb = nb_pool[nb_pool["Security"] == selected_note_bond]
         visible_nb = chosen_nb[chosen_nb.index.isin(filtered.index)]
+        st.caption("Auction tails are sourced from the uploaded Auction Tails master worksheet (2024–2026), matched by auction month and benchmark maturity. Positive = tail; negative = stop-through; zero = on the screws. Missing values remain blank.")
         show_history_analysis(chosen_nb, "note_bond")
+        st.subheader("Tail / stop-through analysis")
+        tail_history = chosen_nb.dropna(subset=["tail_bps"]).sort_values("auction_date", ascending=False).copy()
+        if tail_history.empty:
+            st.info("No recorded tails for this maturity.")
+        else:
+            tail_window = st.selectbox("Tail average lookback", [3, 6, 10, 12], index=1, format_func=lambda n: f"{n} auctions", key="tail_avg_window_v1")
+            current = tail_history.iloc[0]
+            preceding = tail_history.iloc[1:tail_window + 1]
+            x, y, z = st.columns(3)
+            x.metric("Latest recorded tail (bps)", f"{current.tail_bps:+.2f}")
+            y.metric(f"Prior {tail_window} average (bps)", f"{preceding.tail_bps.mean():+.2f}" if not preceding.empty else "N/A")
+            z.metric("Prior observations", str(len(preceding)))
+            st.caption(f"Latest recorded tail: {current.auction_date:%d/%m/%Y}. The historical average excludes that auction. A negative tail is a stop-through.")
+            st.dataframe(tail_history[["auction_date", "tail_bps"]].rename(columns={"auction_date": "Auction date", "tail_bps": "Tail / stop-through (bps)"}), hide_index=True, width="stretch")
         show_auction_table(visible_nb, f"{selected_note_bond} auction history", "treasury_notes_bonds_auctions.csv")
     else:
         st.info("No note or bond maturities are available.")
@@ -220,7 +254,8 @@ with averages:
     avg_selection = st.multiselect("Maturities to compare", avg_choices, default=default_avg, key="avg_maturities_v1")
     metrics = {"Dealer %":"Dealer %","Direct %":"Direct %","Indirect %":"Indirect %","High rate %":"High rate %","Bid-to-cover":"bid_to_cover_ratio","Offering (USD bln)":"offering_amt","Dealer accepted (USD bln)":"primary_dealer_accepted","Direct accepted (USD bln)":"direct_bidder_accepted","Indirect accepted (USD bln)":"indirect_bidder_accepted"}
     records = []
-    for (kind, term), group in data.groupby(["security_type", "Security"]):
+    avg_data = add_tails(data)
+    for (kind, term), group in avg_data.groupby(["security_type", "Security"]):
         if term not in avg_selection or kind not in kinds:
             continue
         group = group.sort_values("auction_date", ascending=False)
@@ -236,6 +271,16 @@ with averages:
             row["Avg " + label] = mean / scale
             row["Latest " + label] = latest[field] / scale
             row["Difference " + label] = (latest[field] - mean) / scale
+        if kind in ("Note", "Bond"):
+            recorded = group.dropna(subset=["tail_bps"])
+            if not recorded.empty:
+                latest_tail = recorded.iloc[0]
+                previous_tails = recorded.iloc[1:average_count + 1]["tail_bps"]
+                row["Latest tail (bps)"] = latest_tail["tail_bps"]
+                row["Tail date"] = latest_tail.auction_date.strftime("%d/%m/%Y")
+                row["Prior tail observations"] = len(previous_tails)
+                row["Avg tail (bps)"] = previous_tails.mean() if not previous_tails.empty else float("nan")
+                row["Difference tail (bps)"] = latest_tail["tail_bps"] - previous_tails.mean() if not previous_tails.empty else float("nan")
         records.append(row)
     if not records:
         st.info("Choose a maturity with at least one preceding auction.")
@@ -247,6 +292,8 @@ with averages:
         cols = ["Security", "Latest date", "Prior auctions", "Rate basis"]
         for label in selected_metrics:
             cols += ["Avg " + label, "Latest " + label, "Difference " + label]
+        if "Latest tail (bps)" in avg.columns:
+            cols += ["Tail date", "Prior tail observations", "Avg tail (bps)", "Latest tail (bps)", "Difference tail (bps)"]
         st.dataframe(avg[cols], hide_index=True, width="stretch", height=620)
         st.download_button(f"Download {average_count}-auction averages CSV",
                            avg.to_csv(index=False).encode("utf-8-sig"),
