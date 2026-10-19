@@ -21,7 +21,9 @@ def canonical_security(row):
         return f"{term} {kind}".strip()
     years = int(match.group(1))
     months = int(match.group(2) or 0)
-    if months == 0 and years in (2, 3, 5, 7, 10, 20, 30):
+    if years == 19 and kind == "Bond":
+        tenor = 20
+    elif months == 0 and years in (2, 3, 5, 7, 10, 20, 30):
         tenor = years
     elif months in (10, 11) and years + 1 in (2, 3, 5, 7, 10, 20, 30):
         tenor = years + 1
@@ -120,7 +122,7 @@ with notes_bonds_tab:
 
 with averages:
     st.subheader("Latest auction vs preceding six auctions")
-    st.caption("Benchmarks group original issues and 10/11-month reopenings by benchmark tenor (e.g. 19-Year 10-Month and 19-Year 11-Month with 20-Year). Benchmark history is independent of recent-auction date filters.")
+    st.caption("Benchmarks group all 19-Year Bond auction terms with 20-Year Bonds, alongside other mapped reopenings. Benchmark history is independent of recent-auction date filters.")
     metrics = {"Dealer %":"Dealer %","Direct %":"Direct %","Indirect %":"Indirect %","High rate %":"High rate %","Bid-to-cover":"bid_to_cover_ratio","Offering (USD bln)":"offering_amt","Dealer accepted (USD bln)":"primary_dealer_accepted","Direct accepted (USD bln)":"direct_bidder_accepted","Indirect accepted (USD bln)":"indirect_bidder_accepted"}
     records=[]
     for (kind,term),group in data.groupby(["security_type","Security"]):
