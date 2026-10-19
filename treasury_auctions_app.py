@@ -13,14 +13,14 @@ NUMERIC = AMOUNTS + ["comp_accepted","high_yield","high_discnt_rate","bid_to_cov
 REGULAR_BILL_WEEKS = {4, 6, 8, 13, 17, 26, 52}
 
 def bill_category(term):
-    """Classify by stated term, without claiming an auction is a confirmed CMB."""
+    """Classify standard bill tenors separately from nonstandard short-dated bills."""
     label = str(term or "").strip()
-    weeks = re.match(r"^(\\d+)\\s*[- ]\\s*Weeks?\\b", label, re.IGNORECASE)
-    days = re.match(r"^(\\d+)\\s*[- ]\\s*Days?\\b", label, re.IGNORECASE)
-    if weeks and int(weeks.group(1)) in REGULAR_BILL_WEEKS:
-        return "Regular Treasury Bills"
-    if days and int(days.group(1)) in {7 * w for w in REGULAR_BILL_WEEKS}:
-        return "Regular Treasury Bills"
+    match = re.match(r"^(\d+)\s*[- ]\s*(Week|Day)s?\b", label, re.IGNORECASE)
+    if match:
+        amount = int(match.group(1))
+        unit = match.group(2).lower()
+        if (unit == "week" and amount in REGULAR_BILL_WEEKS) or (unit == "day" and amount in {7 * w for w in REGULAR_BILL_WEEKS}):
+            return "Regular Treasury Bills"
     return "Cash Management / Other Short-Dated Bills"
 
 def canonical_security(row):
@@ -49,7 +49,7 @@ def canonical_security(row):
     return f"{years}-Year {kind}" if years in {2, 3, 5, 7, 10, 20, 30} else f"{term} {kind}"
 
 @st.cache_data(ttl=900)
-def load(days, schema_version=5):
+def load(days, schema_version=6):
     params = {"fields": ",".join(FIELDS), "filter": f"auction_date:gte:{(date.today()-timedelta(days=days)).isoformat()}", "sort":"-auction_date","page[size]":1000}
     rows = []
     with requests.Session() as session:
