@@ -11,20 +11,17 @@ AMOUNTS = ["offering_amt","primary_dealer_accepted","direct_bidder_accepted","in
 NUMERIC = AMOUNTS + ["comp_accepted","high_yield","high_discnt_rate","bid_to_cover_ratio"]
 
 def canonical_security(row):
-    """Use original benchmark tenors for coupon auction labels and comparisons."""
+    """Normalize Treasury reopenings to their benchmark tenors."""
     term = str(row["security_term"] or "").strip()
     kind = str(row["security_type"] or "").strip()
     if kind == "Bill":
         return f"{term} Bill".strip()
 
-    # Parse the leading number, regardless of whether Treasury uses
-    # '19-Year 11-Month', '19-Year 11-Months', or other suffixes.
-    match = re.match(r"^\\s*(\\d+)\\s*[- ]\\s*Years?\\b", term, re.IGNORECASE)
+    match = re.match(r"^(\d+)-Year", term, re.IGNORECASE)
     if not match:
         return f"{term} {kind}".strip()
     years = int(match.group(1))
 
-    # Reopenings retain their original 10-, 20- or 30-year benchmark identity.
     if kind == "Note" and years == 9:
         return "10-Year Note"
     if kind == "Bond" and years == 19:
@@ -32,17 +29,14 @@ def canonical_security(row):
     if kind == "Bond" and years == 29:
         return "30-Year Bond"
 
-    month_match = re.search(r"(\\d+)\\s*[- ]\\s*Months?\\b", term, re.IGNORECASE)
+    month_match = re.search(r"(\d+)-Month", term, re.IGNORECASE)
     months = int(month_match.group(1)) if month_match else 0
-    benchmark_tenors = {2, 3, 5, 7, 10, 20, 30}
-    if months in (10, 11) and years + 1 in benchmark_tenors:
+    if months in (10, 11) and years + 1 in {2, 3, 5, 7, 10, 20, 30}:
         return f"{years + 1}-Year {kind}"
-    if years in benchmark_tenors:
-        return f"{years}-Year {kind}"
-    return f"{term} {kind}"
+    return f"{years}-Year {kind}" if years in {2, 3, 5, 7, 10, 20, 30} else f"{term} {kind}"
 
 @st.cache_data(ttl=900)
-def load(days, schema_version=3):
+def load(days, schema_version=4):
     params = {"fields": ",".join(FIELDS), "filter": f"auction_date:gte:{(date.today()-timedelta(days=days)).isoformat()}", "sort":"-auction_date","page[size]":1000}
     rows = []
     with requests.Session() as session:
@@ -115,7 +109,7 @@ def show_auction_table(frame, label, filename):
     st.subheader(label)
     st.caption(f"{len(frame):,} auctions shown. Bidder percentages use total competitive accepted. Bills display high discount rate; notes and bonds display high yield.")
     output = table(frame)
-    st.dataframe(output, hide_index=True, use_container_width=True, height=620)
+    st.dataframe(output, hide_index=True, width="stretch", height=620)
     st.download_button("Download CSV", output.to_csv(index=False).encode("utf-8-sig"), filename, "text/csv")
 
 with bills_tab:
@@ -158,6 +152,6 @@ with averages:
         cols=["Security","Latest date","Prior auctions","Rate basis"]
         for label in selected:
             cols += ["Avg "+label,"Latest "+label,"Difference "+label]
-        st.dataframe(avg[cols],hide_index=True,use_container_width=True,height=620)
+        st.dataframe(avg[cols],hide_index=True,width="stretch",height=620)
         st.download_button("Download six-auction averages CSV",avg.to_csv(index=False).encode("utf-8-sig"),"treasury_six_auction_averages.csv","text/csv")
         st.caption("Differences are latest minus the preceding-six average; bidder share differences are percentage points. A smaller available sample is indicated by Prior auctions.")
