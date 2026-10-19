@@ -117,59 +117,138 @@ if securities:
 if len(dates)==2:
     filtered = filtered[filtered.auction_date.dt.date.between(*dates)]
 
-bills_tab, notes_bonds_tab, averages = st.tabs(["Bill auctions", "Notes & bonds", "Six-auction averages"])
+
+bills_tab, notes_bonds_tab, averages = st.tabs(["Bill auctions", "Notes & bonds", "Auction averages"])
+
+METRICS = {
+    "Bid-to-cover": "bid_to_cover_ratio",
+    "Indirect %": "Indirect %",
+    "Direct %": "Direct %",
+    "Dealer %": "Dealer %",
+    "High yield / discount rate (%)": "High rate %",
+    "Offering (USD bln)": "offering_amt",
+}
+SCALE = {"offering_amt": 1e9}
 
 def show_auction_table(frame, label, filename):
     st.subheader(label)
-    st.caption(f"{len(frame):,} auctions shown. Bidder percentages use total competitive accepted. Bills display high discount rate; notes and bonds display high yield.")
+    st.caption(f"{len(frame):,} auctions shown. Bidder percentages use competitive accepted. Bills show the high discount rate; notes and bonds show high yield.")
     output = table(frame)
-    st.dataframe(output, hide_index=True, width="stretch", height=620)
-    st.download_button("Download CSV", output.to_csv(index=False).encode("utf-8-sig"), filename, "text/csv")
+    st.dataframe(output, hide_index=True, width="stretch", height=480)
+    st.download_button("Download auction history CSV", output.to_csv(index=False).encode("utf-8-sig"), filename, "text/csv")
+
+def show_history_analysis(frame, widget_key):
+    st.subheader("Historical demand trends")
+    if frame.empty:
+        st.info("No auctions available for this maturity and date range.")
+        return
+    metric = st.selectbox("Chart metric", list(METRICS), key=f"{widget_key}_metric")
+    history_count = st.selectbox("Chart history", [12, 24, 52, 104], index=1, format_func=lambda n: f"Last {n} auctions", key=f"{widget_key}_history")
+    moving_count = st.selectbox("Moving average", [3, 6, 10, 12], index=1, format_func=lambda n: f"{n} auctions", key=f"{widget_key}_moving")
+    field = METRICS[metric]
+    scale = SCALE.get(field, 1)
+    # Use all loaded auctions for the selected benchmark, not only the sidebar date range.
+    history = frame.sort_values("auction_date").tail(history_count).copy()
+    history["Auction"] = history["auction_date"].dt.strftime("%d/%m/%Y")
+    history["Latest observations"] = history[field] / scale
+    history[f"{moving_count}-auction moving average"] = history["Latest observations"].rolling(moving_count, min_periods=moving_count).mean()
+    chart = history.set_index("auction_date")[["Latest observations", f"{moving_count}-auction moving average"]]
+    st.line_chart(chart, x_label="Auction date", y_label=metric, width="stretch")
+    st.caption("The moving average includes the current auction at each point. Chart observations are ordered by auction date.")
+    valid = frame.sort_values("auction_date", ascending=False)[field].dropna()
+    if len(valid) < 2:
+        st.info("At least two valid auction observations are needed for percentile rankings.")
+        return
+    latest_value = valid.iloc[0] / scale
+    previous = valid.iloc[1:] / scale
+    percentile = 100 * (previous.lt(latest_value).sum() + 0.5 * previous.eq(latest_value).sum()) / len(previous)
+    a, b, d = st.columns(3)
+    a.metric(f"Latest {metric}", f"{latest_value:,.2f}")
+    b.metric("Historical percentile", f"{percentile:.0f}th")
+    d.metric("Previous observations", f"{len(previous):,}")
+    st.caption("Percentile compares the latest auction with all earlier loaded auctions for the selected benchmark; 100th means a higher numerical reading than all previous observations. A higher yield or dealer take-down does not necessarily mean stronger demand. Ties receive half credit.")
 
 with bills_tab:
-    bill_data = filtered[filtered["security_type"].eq("Bill")]
-    bill_categories = st.multiselect("Bill category", ["Regular Treasury Bills", "Cash Management / Other Short-Dated Bills"], default=["Regular Treasury Bills"], key="bill_category_v1")
-    bill_data = bill_data[bill_data["Bill category"].isin(bill_categories)]
-    st.caption("Other short-dated bills are classified by their stated term; this does not confirm that every such auction is a Cash Management Bill.")
-    bill_terms = sorted(bill_data["Security"].dropna().unique().tolist())
-    selected_bills = st.multiselect("Filter bill maturities", bill_terms, default=bill_terms, key="normalized_bill_filter_v2")
-    show_auction_table(bill_data[bill_data["Security"].isin(selected_bills)], "Treasury bill auctions", "treasury_bill_auctions.csv")
+    st.subheader("Treasury bills")
+    bill_categories = st.multiselect(
+        "Bill category",
+        ["Regular Treasury Bills", "Cash Management / Other Short-Dated Bills"],
+        default=["Regular Treasury Bills"], key="bill_category_v2"
+    )
+    st.caption("Nonstandard maturities are classified by their stated term; this does not confirm that each is officially a Cash Management Bill.")
+    bill_pool = data[(data["security_type"] == "Bill") & data["Bill category"].isin(bill_categories)].copy()
+    bill_options = sorted(bill_pool["Security"].dropna().unique().tolist(),
+                          key=lambda s: (0 if "Week" in s else 1, int(re.search(r"\\d+", s).group()) if re.search(r"\\d+", s) else 999))
+    selected_bill = st.selectbox("Select bill maturity", bill_options, index=0 if bill_options else None,
+                                 placeholder="Choose a bill maturity", key="bill_maturity_single_v1")
+    if selected_bill:
+        chosen_bill = bill_pool[bill_pool["Security"] == selected_bill]
+        visible_bill = chosen_bill[chosen_bill.index.isin(filtered.index)]
+        show_history_analysis(chosen_bill, "bill")
+        show_auction_table(visible_bill, f"{selected_bill} auction history", "treasury_bill_auctions.csv")
+    else:
+        st.info("Select a bill category with available auctions.")
 
 with notes_bonds_tab:
-    note_bond_data = filtered[filtered["security_type"].isin(["Note", "Bond"])]
-    note_bond_terms = sorted(note_bond_data["Security"].dropna().unique().tolist())
-    selected_note_bonds = st.multiselect("Filter note and bond maturities", note_bond_terms, default=note_bond_terms, key="normalized_note_bond_filter_v2")
-    show_auction_table(note_bond_data[note_bond_data["Security"].isin(selected_note_bonds)], "Treasury note and bond auctions", "treasury_notes_bonds_auctions.csv")
+    st.subheader("Treasury notes & bonds")
+    nb_pool = data[data["security_type"].isin(["Note", "Bond"]) & data["security_type"].isin(kinds)].copy()
+    nb_options = sorted(nb_pool["Security"].dropna().unique().tolist(),
+                        key=lambda s: (int(re.search(r"\\d+", s).group()) if re.search(r"\\d+", s) else 999, s))
+    selected_note_bond = st.selectbox("Select note or bond maturity", nb_options,
+                                     index=0 if nb_options else None, placeholder="Choose a maturity",
+                                     key="note_bond_maturity_single_v1")
+    if selected_note_bond:
+        chosen_nb = nb_pool[nb_pool["Security"] == selected_note_bond]
+        visible_nb = chosen_nb[chosen_nb.index.isin(filtered.index)]
+        show_history_analysis(chosen_nb, "note_bond")
+        show_auction_table(visible_nb, f"{selected_note_bond} auction history", "treasury_notes_bonds_auctions.csv")
+    else:
+        st.info("No note or bond maturities are available.")
 
 with averages:
-    average_count = st.selectbox("Average lookback (preceding auctions)", [3, 6, 10, 12], index=1, format_func=lambda n: f"{n}-auction average")
+    average_count = st.selectbox("Average lookback (preceding auctions)", [3, 6, 10, 12], index=1,
+                                 format_func=lambda n: f"{n}-auction average")
     st.subheader(f"Latest auction vs preceding {average_count} auctions")
-    st.caption(f"Benchmarks use the preceding {average_count} auctions within each normalized security, excluding the latest auction. Bills respect the selected bill category; note/bond reopenings are grouped by benchmark tenor. Benchmark history is independent of recent-auction date filters.")
+    st.caption("Select one or all maturities. The latest auction is excluded from its historical average. Notes and bond reopenings are grouped by benchmark tenor.")
+    avg_choices = []
+    if "Bill" in kinds:
+        avg_choices.extend(bill_pool["Security"].dropna().unique().tolist())
+    if any(k in kinds for k in ["Note", "Bond"]):
+        avg_choices.extend(nb_pool["Security"].dropna().unique().tolist())
+    avg_choices = sorted(set(avg_choices))
+    default_avg = [x for x in [selected_bill, selected_note_bond] if x in avg_choices]
+    avg_selection = st.multiselect("Maturities to compare", avg_choices, default=default_avg, key="avg_maturities_v1")
     metrics = {"Dealer %":"Dealer %","Direct %":"Direct %","Indirect %":"Indirect %","High rate %":"High rate %","Bid-to-cover":"bid_to_cover_ratio","Offering (USD bln)":"offering_amt","Dealer accepted (USD bln)":"primary_dealer_accepted","Direct accepted (USD bln)":"direct_bidder_accepted","Indirect accepted (USD bln)":"indirect_bidder_accepted"}
-    records=[]
-    for (kind,term),group in data.groupby(["security_type","Security"]):
-        group=group.sort_values("auction_date",ascending=False)
-        latest=group.iloc[0]
-        if kind not in kinds or (kind == "Bill" and (latest.Security not in selected_bills or latest["Bill category"] not in bill_categories)) or (kind in ["Note", "Bond"] and latest.Security not in selected_note_bonds):
+    records = []
+    for (kind, term), group in data.groupby(["security_type", "Security"]):
+        if term not in avg_selection or kind not in kinds:
             continue
-        prior=group.iloc[1:average_count + 1]
+        group = group.sort_values("auction_date", ascending=False)
+        latest = group.iloc[0]
+        prior = group.iloc[1:average_count + 1]
         if prior.empty:
             continue
-        row={"Security":latest.Security,"Latest date":latest.auction_date.strftime("%d/%m/%Y"),"Prior auctions":len(prior),"Rate basis":latest["Rate basis"]}
-        for label,field in metrics.items():
-            scale=1e9 if "USD bln" in label else 1
-            row["Avg "+label]=prior[field].mean()/scale
-            row["Latest "+label]=latest[field]/scale
-            row["Difference "+label]=(latest[field]-prior[field].mean())/scale
+        row = {"Security": term, "Latest date": latest.auction_date.strftime("%d/%m/%Y"),
+               "Prior auctions": len(prior), "Rate basis": latest["Rate basis"]}
+        for label, field in metrics.items():
+            scale = 1e9 if "USD bln" in label else 1
+            mean = prior[field].mean()
+            row["Avg " + label] = mean / scale
+            row["Latest " + label] = latest[field] / scale
+            row["Difference " + label] = (latest[field] - mean) / scale
         records.append(row)
     if not records:
-        st.info("No benchmark observations found.")
+        st.info("Choose a maturity with at least one preceding auction.")
     else:
-        avg=pd.DataFrame(records).sort_values("Security")
-        selected=st.multiselect("Metrics",list(metrics),default=["Dealer %","Direct %","Indirect %","High rate %","Bid-to-cover"])
-        cols=["Security","Latest date","Prior auctions","Rate basis"]
-        for label in selected:
-            cols += ["Avg "+label,"Latest "+label,"Difference "+label]
-        st.dataframe(avg[cols],hide_index=True,width="stretch",height=620)
-        st.download_button(f"Download {average_count}-auction averages CSV",avg.to_csv(index=False).encode("utf-8-sig"),f"treasury_{average_count}_auction_averages.csv","text/csv")
-        st.caption(f"Differences are latest minus the preceding-{average_count} average; bidder share differences are percentage points. A smaller available sample is indicated by Prior auctions.")
+        avg = pd.DataFrame(records).sort_values("Security")
+        selected_metrics = st.multiselect("Metrics", list(metrics),
+                                          default=["Dealer %", "Direct %", "Indirect %", "High rate %", "Bid-to-cover"],
+                                          key="avg_metric_selection_v2")
+        cols = ["Security", "Latest date", "Prior auctions", "Rate basis"]
+        for label in selected_metrics:
+            cols += ["Avg " + label, "Latest " + label, "Difference " + label]
+        st.dataframe(avg[cols], hide_index=True, width="stretch", height=620)
+        st.download_button(f"Download {average_count}-auction averages CSV",
+                           avg.to_csv(index=False).encode("utf-8-sig"),
+                           f"treasury_{average_count}_auction_averages.csv", "text/csv")
+        st.caption(f"Differences are latest minus the preceding-{average_count} average; bidder share differences are percentage points. Prior auctions shows the actual available sample.")
