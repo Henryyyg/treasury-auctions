@@ -160,7 +160,8 @@ def show_history_analysis(frame, widget_key):
     if frame.empty:
         st.info("No auctions available for this maturity and date range.")
         return
-    available_metrics = [m for m in METRICS if METRICS[m] != "tail_bps" or frame["tail_bps"].notna().any()]
+    has_tail_data = "tail_bps" in frame.columns and frame["tail_bps"].notna().any()
+    available_metrics = [m for m in METRICS if METRICS[m] != "tail_bps" or has_tail_data]
     metric = st.selectbox("Chart metric", available_metrics, key=f"{widget_key}_metric")
     history_count = st.selectbox("Chart history", [12, 24, 52, 104], index=1, format_func=lambda n: f"Last {n} auctions", key=f"{widget_key}_history")
     moving_count = st.selectbox("Moving average", [3, 6, 10, 12], index=1, format_func=lambda n: f"{n} auctions", key=f"{widget_key}_moving")
