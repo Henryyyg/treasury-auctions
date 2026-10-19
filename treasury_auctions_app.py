@@ -54,12 +54,13 @@ def table(df):
 st.title("US Treasury Auction Dashboard")
 st.caption("Official US Treasury FiscalData | Bills, Notes and Bonds | Cached for 15 minutes")
 with st.sidebar:
-    days = st.selectbox("Load history (days)",[90,180,365,730],index=2)
+    days = st.selectbox("Load history for recent-auction tables (days)",[90,180,365,730],index=2)
+    benchmark_days = st.selectbox("Benchmark history (years)", [2,3,5,10], index=2)
     if st.button("Refresh data"):
         load.clear()
         st.rerun()
 try:
-    data = load(days)
+    data = load(max(days, benchmark_days * 365))
 except Exception as exc:
     st.error(f"Treasury data could not be loaded: {exc}")
     st.stop()
@@ -70,8 +71,8 @@ with st.sidebar:
     kinds = st.multiselect("Security types",["Bill","Note","Bond"],default=["Bill","Note","Bond"])
     st.caption("Choose maturities separately inside the Bills and Notes & Bonds tabs.")
     securities = []
-    dates = st.date_input("Auction date range",(max(data.auction_date.min().date(),date.today()-timedelta(days=90)),date.today()),min_value=data.auction_date.min().date(),max_value=date.today())
-filtered = data[data.security_type.isin(kinds)].copy()
+    dates = st.date_input("Auction date range",(date.today()-timedelta(days=min(days,90)),date.today()),min_value=data.auction_date.min().date(),max_value=date.today())
+filtered = data[data.security_type.isin(kinds) & (data.auction_date.dt.date >= date.today()-timedelta(days=days))].copy()
 if securities:
     filtered = filtered[filtered.Security.isin(securities)]
 if len(dates)==2:
@@ -100,7 +101,7 @@ with notes_bonds_tab:
 
 with averages:
     st.subheader("Latest auction vs preceding six auctions")
-    st.caption("Benchmarks use the preceding six auctions of the same security term, including reopenings. The date-range filter does not restrict the benchmark history.")
+    st.caption("Benchmarks use up to six preceding auctions of the same security term, including reopenings. Benchmark history is independent of the recent-auction date filters.")
     metrics = {"Dealer %":"Dealer %","Direct %":"Direct %","Indirect %":"Indirect %","High rate %":"High rate %","Bid-to-cover":"bid_to_cover_ratio","Offering (USD bln)":"offering_amt","Dealer accepted (USD bln)":"primary_dealer_accepted","Direct accepted (USD bln)":"direct_bidder_accepted","Indirect accepted (USD bln)":"indirect_bidder_accepted"}
     records=[]
     for (kind,term),group in data.groupby(["security_type","security_term"]):
