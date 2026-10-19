@@ -11,25 +11,30 @@ AMOUNTS = ["offering_amt","primary_dealer_accepted","direct_bidder_accepted","in
 NUMERIC = AMOUNTS + ["comp_accepted","high_yield","high_discnt_rate","bid_to_cover_ratio"]
 
 def canonical_security(row):
-    """Group reopened coupon securities by their original benchmark tenor."""
+    """Normalize displayed security names and six-auction benchmark groups."""
     term = str(row["security_term"] or "").strip()
-    kind = row["security_type"]
+    kind = str(row["security_type"] or "").strip()
     if kind == "Bill":
         return f"{term} Bill".strip()
-    match = re.match(r"^(\\d+)-Year(?:\\s+(\\d+)-Month)?$", term, re.IGNORECASE)
-    if not match:
+
+    # Treasury term labels vary (e.g. 19-Year 11-Month, 19-Year 11-Months).
+    # All 19-year bond terms belong in the 20-year benchmark group.
+    normalized = re.sub(r"\\s+", " ", term).strip()
+    year_match = re.match(r"^(\\d+)\\s*[- ]\\s*Years?\\b", normalized, re.IGNORECASE)
+    if not year_match:
         return f"{term} {kind}".strip()
-    years = int(match.group(1))
-    months = int(match.group(2) or 0)
+    years = int(year_match.group(1))
     if years == 19 and kind == "Bond":
-        tenor = 20
-    elif months == 0 and years in (2, 3, 5, 7, 10, 20, 30):
-        tenor = years
-    elif months in (10, 11) and years + 1 in (2, 3, 5, 7, 10, 20, 30):
-        tenor = years + 1
-    else:
-        return f"{term} {kind}".strip()
-    return f"{tenor}-Year {kind}"
+        return "20-Year Bond"
+
+    month_match = re.search(r"(\\d+)\\s*[- ]\\s*Months?\\b", normalized, re.IGNORECASE)
+    months = int(month_match.group(1)) if month_match else 0
+    benchmark_tenors = {2, 3, 5, 7, 10, 20, 30}
+    if months == 0 and years in benchmark_tenors:
+        return f"{years}-Year {kind}"
+    if months in (10, 11) and years + 1 in benchmark_tenors:
+        return f"{years + 1}-Year {kind}"
+    return f"{term} {kind}".strip()
 
 @st.cache_data(ttl=900)
 def load(days):
