@@ -11,30 +11,35 @@ AMOUNTS = ["offering_amt","primary_dealer_accepted","direct_bidder_accepted","in
 NUMERIC = AMOUNTS + ["comp_accepted","high_yield","high_discnt_rate","bid_to_cover_ratio"]
 
 def canonical_security(row):
-    """Normalize displayed security names and six-auction benchmark groups."""
+    """Use original benchmark tenors for coupon auction labels and comparisons."""
     term = str(row["security_term"] or "").strip()
     kind = str(row["security_type"] or "").strip()
     if kind == "Bill":
         return f"{term} Bill".strip()
 
-    # Treasury term labels vary (e.g. 19-Year 11-Month, 19-Year 11-Months).
-    # All 19-year bond terms belong in the 20-year benchmark group.
-    normalized = re.sub(r"\\s+", " ", term).strip()
-    year_match = re.match(r"^(\\d+)\\s*[- ]\\s*Years?\\b", normalized, re.IGNORECASE)
-    if not year_match:
+    # Parse the leading number, regardless of whether Treasury uses
+    # '19-Year 11-Month', '19-Year 11-Months', or other suffixes.
+    match = re.match(r"^\\s*(\\d+)\\s*[- ]\\s*Years?\\b", term, re.IGNORECASE)
+    if not match:
         return f"{term} {kind}".strip()
-    years = int(year_match.group(1))
-    if years == 19 and kind == "Bond":
-        return "20-Year Bond"
+    years = int(match.group(1))
 
-    month_match = re.search(r"(\\d+)\\s*[- ]\\s*Months?\\b", normalized, re.IGNORECASE)
+    # Reopenings retain their original 10-, 20- or 30-year benchmark identity.
+    if kind == "Note" and years == 9:
+        return "10-Year Note"
+    if kind == "Bond" and years == 19:
+        return "20-Year Bond"
+    if kind == "Bond" and years == 29:
+        return "30-Year Bond"
+
+    month_match = re.search(r"(\\d+)\\s*[- ]\\s*Months?\\b", term, re.IGNORECASE)
     months = int(month_match.group(1)) if month_match else 0
     benchmark_tenors = {2, 3, 5, 7, 10, 20, 30}
-    if months == 0 and years in benchmark_tenors:
-        return f"{years}-Year {kind}"
     if months in (10, 11) and years + 1 in benchmark_tenors:
         return f"{years + 1}-Year {kind}"
-    return f"{term} {kind}".strip()
+    if years in benchmark_tenors:
+        return f"{years}-Year {kind}"
+    return f"{term} {kind}"
 
 @st.cache_data(ttl=900)
 def load(days):
