@@ -5,9 +5,9 @@ from datetime import date, timedelta
 
 st.set_page_config(page_title="Treasury Auction Dashboard", layout="wide")
 API = "https://api.fiscaldata.treasury.gov/services/api/fiscal_service/v1/accounting/od/auctions_query"
-FIELDS = ["cusip","auction_date","security_type","security_term","tips","floating_rate","cash_management_bill","offering_amt","primary_dealer_accepted","direct_bidder_accepted","indirect_bidder_accepted","comp_accepted","high_yield","high_discount_rate","bid_to_cover_ratio"]
+FIELDS = ["cusip","auction_date","security_type","security_term","inflation_index_security","floating_rate","offering_amt","primary_dealer_accepted","direct_bidder_accepted","indirect_bidder_accepted","comp_accepted","high_yield","high_discnt_rate","bid_to_cover_ratio"]
 AMOUNTS = ["offering_amt","primary_dealer_accepted","direct_bidder_accepted","indirect_bidder_accepted"]
-NUMERIC = AMOUNTS + ["comp_accepted","high_yield","high_discount_rate","bid_to_cover_ratio"]
+NUMERIC = AMOUNTS + ["comp_accepted","high_yield","high_discnt_rate","bid_to_cover_ratio"]
 
 @st.cache_data(ttl=900)
 def load(days):
@@ -17,7 +17,8 @@ def load(days):
         for page in range(1,30):
             params["page[number]"] = page
             response = session.get(API,params=params,timeout=40)
-            response.raise_for_status()
+            if not response.ok:
+                raise RuntimeError(f"Treasury API HTTP {response.status_code}: {response.text[:700]}")
             payload = response.json()
             batch = payload.get("data",[])
             rows.extend(batch)
@@ -30,14 +31,14 @@ def load(days):
     for col in NUMERIC:
         df[col] = pd.to_numeric(df[col],errors="coerce")
     df = df[df["security_type"].isin(["Bill","Note","Bond"]) & (df["auction_date"].dt.date<=date.today())].copy()
-    for flag in ["tips","floating_rate","cash_management_bill"]:
+    for flag in ["inflation_index_security","floating_rate"]:
         df = df[~df[flag].fillna("").astype(str).str.lower().isin(["yes","true","1"])]
     df = df[df["bid_to_cover_ratio"].notna()].copy()
     df["Security"] = df["security_term"].fillna("")+" "+df["security_type"]
     df["Security"] = df["Security"].str.strip()
     for label,field in [("Dealer %","primary_dealer_accepted"),("Direct %","direct_bidder_accepted"),("Indirect %","indirect_bidder_accepted")]:
         df[label] = df[field]/df["comp_accepted"].where(df["comp_accepted"]>0)*100
-    df["High rate %"] = df["high_discount_rate"].where(df["security_type"].eq("Bill"),df["high_yield"])
+    df["High rate %"] = df["high_discnt_rate"].where(df["security_type"].eq("Bill"),df["high_yield"])
     df["Rate basis"] = df["security_type"].map({"Bill":"Discount rate","Note":"Yield","Bond":"Yield"})
     return df.sort_values("auction_date",ascending=False).drop_duplicates(["cusip","auction_date"])
 
