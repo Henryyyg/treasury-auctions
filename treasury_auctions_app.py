@@ -10,6 +10,19 @@ FIELDS = ["cusip","auction_date","security_type","security_term","inflation_inde
 AMOUNTS = ["offering_amt","primary_dealer_accepted","direct_bidder_accepted","indirect_bidder_accepted"]
 NUMERIC = AMOUNTS + ["comp_accepted","high_yield","high_discnt_rate","bid_to_cover_ratio"]
 
+REGULAR_BILL_WEEKS = {4, 6, 8, 13, 17, 26, 52}
+
+def bill_category(term):
+    """Classify by stated term, without claiming an auction is a confirmed CMB."""
+    label = str(term or "").strip()
+    weeks = re.match(r"^(\\d+)\\s*[- ]\\s*Weeks?\\b", label, re.IGNORECASE)
+    days = re.match(r"^(\\d+)\\s*[- ]\\s*Days?\\b", label, re.IGNORECASE)
+    if weeks and int(weeks.group(1)) in REGULAR_BILL_WEEKS:
+        return "Regular Treasury Bills"
+    if days and int(days.group(1)) in {7 * w for w in REGULAR_BILL_WEEKS}:
+        return "Regular Treasury Bills"
+    return "Cash Management / Other Short-Dated Bills"
+
 def canonical_security(row):
     """Normalize Treasury reopenings to their benchmark tenors."""
     term = str(row["security_term"] or "").strip()
@@ -36,7 +49,7 @@ def canonical_security(row):
     return f"{years}-Year {kind}" if years in {2, 3, 5, 7, 10, 20, 30} else f"{term} {kind}"
 
 @st.cache_data(ttl=900)
-def load(days, schema_version=4):
+def load(days, schema_version=5):
     params = {"fields": ",".join(FIELDS), "filter": f"auction_date:gte:{(date.today()-timedelta(days=days)).isoformat()}", "sort":"-auction_date","page[size]":1000}
     rows = []
     with requests.Session() as session:
@@ -61,6 +74,7 @@ def load(days, schema_version=4):
         df = df[~df[flag].fillna("").astype(str).str.lower().isin(["yes","true","1"])]
     df = df[df["bid_to_cover_ratio"].notna()].copy()
     df["Security"] = df.apply(canonical_security, axis=1)
+    df["Bill category"] = df["security_term"].apply(bill_category).where(df["security_type"].eq("Bill"), "")
     for label,field in [("Dealer %","primary_dealer_accepted"),("Direct %","direct_bidder_accepted"),("Indirect %","indirect_bidder_accepted")]:
         df[label] = df[field]/df["comp_accepted"].where(df["comp_accepted"]>0)*100
     df["High rate %"] = df["high_discnt_rate"].where(df["security_type"].eq("Bill"),df["high_yield"])
@@ -114,6 +128,9 @@ def show_auction_table(frame, label, filename):
 
 with bills_tab:
     bill_data = filtered[filtered["security_type"].eq("Bill")]
+    bill_categories = st.multiselect("Bill category", ["Regular Treasury Bills", "Cash Management / Other Short-Dated Bills"], default=["Regular Treasury Bills"], key="bill_category_v1")
+    bill_data = bill_data[bill_data["Bill category"].isin(bill_categories)]
+    st.caption("Other short-dated bills are classified by their stated term; this does not confirm that every such auction is a Cash Management Bill.")
     bill_terms = sorted(bill_data["Security"].dropna().unique().tolist())
     selected_bills = st.multiselect("Filter bill maturities", bill_terms, default=bill_terms, key="normalized_bill_filter_v2")
     show_auction_table(bill_data[bill_data["Security"].isin(selected_bills)], "Treasury bill auctions", "treasury_bill_auctions.csv")
@@ -126,13 +143,13 @@ with notes_bonds_tab:
 
 with averages:
     st.subheader("Latest auction vs preceding six auctions")
-    st.caption("Benchmarks group all 19-Year Bond auction terms with 20-Year Bonds, alongside other mapped reopenings. Benchmark history is independent of recent-auction date filters.")
+    st.caption("Benchmarks use the preceding six auctions within each normalized security. Bills respect the selected bill category; note/bond reopenings are grouped by benchmark tenor. Benchmark history is independent of recent-auction date filters.")
     metrics = {"Dealer %":"Dealer %","Direct %":"Direct %","Indirect %":"Indirect %","High rate %":"High rate %","Bid-to-cover":"bid_to_cover_ratio","Offering (USD bln)":"offering_amt","Dealer accepted (USD bln)":"primary_dealer_accepted","Direct accepted (USD bln)":"direct_bidder_accepted","Indirect accepted (USD bln)":"indirect_bidder_accepted"}
     records=[]
     for (kind,term),group in data.groupby(["security_type","Security"]):
         group=group.sort_values("auction_date",ascending=False)
         latest=group.iloc[0]
-        if kind not in kinds or (kind == "Bill" and latest.Security not in selected_bills) or (kind in ["Note", "Bond"] and latest.Security not in selected_note_bonds):
+        if kind not in kinds or (kind == "Bill" and (latest.Security not in selected_bills or latest["Bill category"] not in bill_categories)) or (kind in ["Note", "Bond"] and latest.Security not in selected_note_bonds):
             continue
         prior=group.iloc[1:7]
         if prior.empty:
