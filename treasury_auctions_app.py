@@ -42,7 +42,7 @@ def canonical_security(row):
     return f"{term} {kind}"
 
 @st.cache_data(ttl=900)
-def load(days):
+def load(days, schema_version=3):
     params = {"fields": ",".join(FIELDS), "filter": f"auction_date:gte:{(date.today()-timedelta(days=days)).isoformat()}", "sort":"-auction_date","page[size]":1000}
     rows = []
     with requests.Session() as session:
@@ -85,7 +85,7 @@ def table(df):
 st.title("US Treasury Auction Dashboard")
 st.caption("Official US Treasury FiscalData | Bills, Notes and Bonds | Cached for 15 minutes")
 with st.sidebar:
-    days = st.selectbox("Load history for recent-auction tables (days)",[90,180,365,730],index=2)
+    days = st.selectbox("Recent-auction history", [90,180,365,730,1825,3650], index=4, format_func=lambda n: f"{n} days" if n < 365 else f"{n // 365} years")
     benchmark_days = st.selectbox("Benchmark history (years)", [2,3,5,10], index=2)
     if st.button("Refresh data"):
         load.clear()
@@ -102,7 +102,7 @@ with st.sidebar:
     kinds = st.multiselect("Security types",["Bill","Note","Bond"],default=["Bill","Note","Bond"])
     st.caption("Choose maturities separately inside the Bills and Notes & Bonds tabs.")
     securities = []
-    dates = st.date_input("Auction date range",(date.today()-timedelta(days=min(days,90)),date.today()),min_value=data.auction_date.min().date(),max_value=date.today())
+    dates = st.date_input("Auction date range", (max(data.auction_date.min().date(), date.today()-timedelta(days=days)), date.today()), min_value=data.auction_date.min().date(), max_value=date.today(), key="full_auction_date_range_v2")
 filtered = data[data.security_type.isin(kinds) & (data.auction_date.dt.date >= date.today()-timedelta(days=days))].copy()
 if securities:
     filtered = filtered[filtered.Security.isin(securities)]
@@ -113,7 +113,7 @@ bills_tab, notes_bonds_tab, averages = st.tabs(["Bill auctions", "Notes & bonds"
 
 def show_auction_table(frame, label, filename):
     st.subheader(label)
-    st.caption("Bidder percentages use total competitive accepted. Bills display the high discount rate; notes and bonds display the high yield.")
+    st.caption(f"{len(frame):,} auctions shown. Bidder percentages use total competitive accepted. Bills display high discount rate; notes and bonds display high yield.")
     output = table(frame)
     st.dataframe(output, hide_index=True, use_container_width=True, height=620)
     st.download_button("Download CSV", output.to_csv(index=False).encode("utf-8-sig"), filename, "text/csv")
@@ -121,13 +121,13 @@ def show_auction_table(frame, label, filename):
 with bills_tab:
     bill_data = filtered[filtered["security_type"].eq("Bill")]
     bill_terms = sorted(bill_data["Security"].dropna().unique().tolist())
-    selected_bills = st.multiselect("Filter bill maturities", bill_terms, default=bill_terms, key="bill_maturity_filter")
+    selected_bills = st.multiselect("Filter bill maturities", bill_terms, default=bill_terms, key="normalized_bill_filter_v2")
     show_auction_table(bill_data[bill_data["Security"].isin(selected_bills)], "Treasury bill auctions", "treasury_bill_auctions.csv")
 
 with notes_bonds_tab:
     note_bond_data = filtered[filtered["security_type"].isin(["Note", "Bond"])]
     note_bond_terms = sorted(note_bond_data["Security"].dropna().unique().tolist())
-    selected_note_bonds = st.multiselect("Filter note and bond maturities", note_bond_terms, default=note_bond_terms, key="note_bond_maturity_filter")
+    selected_note_bonds = st.multiselect("Filter note and bond maturities", note_bond_terms, default=note_bond_terms, key="normalized_note_bond_filter_v2")
     show_auction_table(note_bond_data[note_bond_data["Security"].isin(selected_note_bonds)], "Treasury note and bond auctions", "treasury_notes_bonds_auctions.csv")
 
 with averages:
