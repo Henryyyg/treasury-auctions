@@ -46,6 +46,7 @@ def table(df):
     names = {"auction_date":"Auction date","offering_amt":"Offering (USD bln)","primary_dealer_accepted":"Dealer accepted (USD bln)","direct_bidder_accepted":"Direct accepted (USD bln)","indirect_bidder_accepted":"Indirect accepted (USD bln)","High rate %":"High yield / discount rate (%)","bid_to_cover_ratio":"Bid-to-cover"}
     columns = ["auction_date","Security","offering_amt","primary_dealer_accepted","Dealer %","direct_bidder_accepted","Direct %","indirect_bidder_accepted","Indirect %","High rate %","bid_to_cover_ratio","Rate basis"]
     out = df[columns].rename(columns=names).copy()
+    out["Auction date"] = out["Auction date"].dt.strftime("%d/%m/%Y")
     for col in [names[x] for x in AMOUNTS]:
         out[col] /= 1e9
     return out
@@ -75,13 +76,20 @@ if securities:
 if len(dates)==2:
     filtered = filtered[filtered.auction_date.dt.date.between(*dates)]
 
-recent,averages = st.tabs(["Recent auctions","Six-auction averages"])
-with recent:
-    st.subheader("Recent completed auctions")
-    st.caption("Bidder percentages are calculated against total competitive accepted. Bills use high discount rate; notes and bonds use high yield.")
-    output = table(filtered)
-    st.dataframe(output,hide_index=True,use_container_width=True,height=620)
-    st.download_button("Download recent auctions CSV",output.to_csv(index=False).encode("utf-8-sig"),"treasury_recent_auctions.csv","text/csv")
+bills_tab, notes_bonds_tab, averages = st.tabs(["Bill auctions", "Notes & bonds", "Six-auction averages"])
+
+def show_auction_table(frame, label, filename):
+    st.subheader(label)
+    st.caption("Bidder percentages use total competitive accepted. Bills display the high discount rate; notes and bonds display the high yield.")
+    output = table(frame)
+    st.dataframe(output, hide_index=True, use_container_width=True, height=620)
+    st.download_button("Download CSV", output.to_csv(index=False).encode("utf-8-sig"), filename, "text/csv")
+
+with bills_tab:
+    show_auction_table(filtered[filtered["security_type"].eq("Bill")], "Treasury bill auctions", "treasury_bill_auctions.csv")
+
+with notes_bonds_tab:
+    show_auction_table(filtered[filtered["security_type"].isin(["Note", "Bond"])], "Treasury note and bond auctions", "treasury_notes_bonds_auctions.csv")
 
 with averages:
     st.subheader("Latest auction vs preceding six auctions")
@@ -96,7 +104,7 @@ with averages:
         prior=group.iloc[1:7]
         if prior.empty:
             continue
-        row={"Security":latest.Security,"Latest date":latest.auction_date,"Prior auctions":len(prior),"Rate basis":latest["Rate basis"]}
+        row={"Security":latest.Security,"Latest date":latest.auction_date.strftime("%d/%m/%Y"),"Prior auctions":len(prior),"Rate basis":latest["Rate basis"]}
         for label,field in metrics.items():
             scale=1e9 if "USD bln" in label else 1
             row["Avg "+label]=prior[field].mean()/scale
