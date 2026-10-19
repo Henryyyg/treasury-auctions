@@ -178,7 +178,7 @@ with bills_tab:
     st.caption("Nonstandard maturities are classified by their stated term; this does not confirm that each is officially a Cash Management Bill.")
     bill_pool = data[(data["security_type"] == "Bill") & data["Bill category"].isin(bill_categories)].copy()
     bill_options = sorted(bill_pool["Security"].dropna().unique().tolist(),
-                          key=lambda s: (0 if "Week" in s else 1, int(re.search(r"\\d+", s).group()) if re.search(r"\\d+", s) else 999))
+                          key=lambda s: (0 if "Week" in s else 1, int(re.search(r"[0-9]+", s).group()) if re.search(r"[0-9]+", s) else 999))
     selected_bill = st.selectbox("Select bill maturity", bill_options, index=0 if bill_options else None,
                                  placeholder="Choose a bill maturity", key="bill_maturity_single_v1")
     if selected_bill:
@@ -193,7 +193,7 @@ with notes_bonds_tab:
     st.subheader("Treasury notes & bonds")
     nb_pool = data[data["security_type"].isin(["Note", "Bond"]) & data["security_type"].isin(kinds)].copy()
     nb_options = sorted(nb_pool["Security"].dropna().unique().tolist(),
-                        key=lambda s: (int(re.search(r"\\d+", s).group()) if re.search(r"\\d+", s) else 999, s))
+                        key=lambda s: (int(re.search(r"[0-9]+", s).group()) if re.search(r"[0-9]+", s) else 999, s))
     selected_note_bond = st.selectbox("Select note or bond maturity", nb_options,
                                      index=0 if nb_options else None, placeholder="Choose a maturity",
                                      key="note_bond_maturity_single_v1")
