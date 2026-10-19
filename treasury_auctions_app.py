@@ -142,8 +142,9 @@ with notes_bonds_tab:
     show_auction_table(note_bond_data[note_bond_data["Security"].isin(selected_note_bonds)], "Treasury note and bond auctions", "treasury_notes_bonds_auctions.csv")
 
 with averages:
-    st.subheader("Latest auction vs preceding six auctions")
-    st.caption("Benchmarks use the preceding six auctions within each normalized security. Bills respect the selected bill category; note/bond reopenings are grouped by benchmark tenor. Benchmark history is independent of recent-auction date filters.")
+    average_count = st.selectbox("Average lookback (preceding auctions)", [3, 6, 10, 12], index=1, format_func=lambda n: f"{n}-auction average")
+    st.subheader(f"Latest auction vs preceding {average_count} auctions")
+    st.caption(f"Benchmarks use the preceding {average_count} auctions within each normalized security, excluding the latest auction. Bills respect the selected bill category; note/bond reopenings are grouped by benchmark tenor. Benchmark history is independent of recent-auction date filters.")
     metrics = {"Dealer %":"Dealer %","Direct %":"Direct %","Indirect %":"Indirect %","High rate %":"High rate %","Bid-to-cover":"bid_to_cover_ratio","Offering (USD bln)":"offering_amt","Dealer accepted (USD bln)":"primary_dealer_accepted","Direct accepted (USD bln)":"direct_bidder_accepted","Indirect accepted (USD bln)":"indirect_bidder_accepted"}
     records=[]
     for (kind,term),group in data.groupby(["security_type","Security"]):
@@ -151,7 +152,7 @@ with averages:
         latest=group.iloc[0]
         if kind not in kinds or (kind == "Bill" and (latest.Security not in selected_bills or latest["Bill category"] not in bill_categories)) or (kind in ["Note", "Bond"] and latest.Security not in selected_note_bonds):
             continue
-        prior=group.iloc[1:7]
+        prior=group.iloc[1:average_count + 1]
         if prior.empty:
             continue
         row={"Security":latest.Security,"Latest date":latest.auction_date.strftime("%d/%m/%Y"),"Prior auctions":len(prior),"Rate basis":latest["Rate basis"]}
@@ -170,5 +171,5 @@ with averages:
         for label in selected:
             cols += ["Avg "+label,"Latest "+label,"Difference "+label]
         st.dataframe(avg[cols],hide_index=True,width="stretch",height=620)
-        st.download_button("Download six-auction averages CSV",avg.to_csv(index=False).encode("utf-8-sig"),"treasury_six_auction_averages.csv","text/csv")
-        st.caption("Differences are latest minus the preceding-six average; bidder share differences are percentage points. A smaller available sample is indicated by Prior auctions.")
+        st.download_button(f"Download {average_count}-auction averages CSV",avg.to_csv(index=False).encode("utf-8-sig"),f"treasury_{average_count}_auction_averages.csv","text/csv")
+        st.caption(f"Differences are latest minus the preceding-{average_count} average; bidder share differences are percentage points. A smaller available sample is indicated by Prior auctions.")
