@@ -366,7 +366,7 @@ with update_tails_tab:
 # Keep the headline generator below every other dashboard section.
 st.divider()
 with st.expander("Auction headline generator", expanded=False):
-    st.caption("Previous completed auction versus the preceding six-auction average. Tail observations are maintained separately and may have a different latest date.")
+    st.caption("Previous completed auction versus the average of the six most recent completed auctions (including the previous auction). Tail observations are maintained separately and may have a different latest date.")
     headline_tenors = ["3-Year Note", "10-Year Note", "30-Year Bond", "20-Year Bond", "2-Year Note", "5-Year Note", "7-Year Note"]
     headline_tenor = st.selectbox("Auction maturity for headline", headline_tenors, key="headline_maturity")
     headline_data = add_tails(data[data["security_type"].isin(["Note", "Bond"])].copy())
@@ -375,7 +375,7 @@ with st.expander("Auction headline generator", expanded=False):
         st.info("No completed Treasury auctions are available for this maturity.")
     else:
         latest_auction = headline_group.iloc[0]
-        prior_six = headline_group.iloc[1:7]
+        prior_six = headline_group.iloc[:6]  # Six most recent completed auctions, including latest
         tails_for_tenor = headline_group.dropna(subset=["tail_bps"]).sort_values("auction_date", ascending=False)
         headline_label = headline_tenor.split("-Year")[0] + "-year"
 
@@ -391,7 +391,7 @@ with st.expander("Auction headline generator", expanded=False):
             latest_tail_date = None
         else:
             latest_tail = tails_for_tenor.iloc[0]
-            older_tails = tails_for_tenor.iloc[1:7]["tail_bps"]
+            older_tails = tails_for_tenor.iloc[:6]["tail_bps"]
             tail_line = headline_row("Tail", latest_tail["tail_bps"], older_tails, "bps", 1)
             latest_tail_date = latest_tail["auction_date"]
 
@@ -410,7 +410,7 @@ with st.expander("Auction headline generator", expanded=False):
         st.code(headline_text, language=None)
         st.caption(f"Latest completed {headline_tenor} auction: {latest_auction['auction_date']:%d/%m/%Y}. "
                    + (f"Latest recorded tail: {latest_tail_date:%d/%m/%Y}. " if latest_tail_date is not None else "No recorded tail. ")
-                   + f"Six-auction averages exclude the displayed previous observation; {len(prior_six)} earlier Treasury auctions and "
-                   + f"{max(0, len(tails_for_tenor) - 1)} earlier tail observations are available.")
-        if len(prior_six) < 6 or (not tails_for_tenor.empty and len(tails_for_tenor) < 7):
-            st.warning("Fewer than six earlier observations are available for at least one metric; averages use the available observations.")
+                   + f"Six-auction averages include the displayed previous observation; {len(prior_six)} completed Treasury auctions and "
+                   + f"{len(tails_for_tenor)} recorded tail observations are available.")
+        if len(prior_six) < 6 or (not tails_for_tenor.empty and len(tails_for_tenor) < 6):
+            st.warning("Fewer than six completed observations are available for at least one metric; averages use the available observations.")
