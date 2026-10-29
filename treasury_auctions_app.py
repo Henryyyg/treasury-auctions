@@ -120,7 +120,7 @@ def add_tails(frame):
     result = frame.copy()
     result["auction_month"] = result["auction_date"].dt.strftime("%Y-%m")
     result = result.merge(load_tails(), how="left", on=["auction_month", "Security"], validate="many_to_one")
-    result.loc[~result["Auction class"].eq("Nominal") | result["security_type"].eq("Bill"), "tail_bps"] = float("nan")
+    result.loc[result["security_type"].isin(["Bill", "FRN"]), "tail_bps"] = float("nan")
     # TIPS tails transcribed from the TIPS worksheet (2025 onward).
     # Blank and zero spreadsheet placeholders indicate no auction.
     tips_history = {
@@ -146,8 +146,8 @@ def add_tails(frame):
     }
     tips_mask = result["Auction class"].eq("TIPS")
     result.loc[tips_mask, "tail_bps"] = [
-        tips_history.get((month, security), float("nan"))
-        for month, security in zip(result.loc[tips_mask, "auction_month"], result.loc[tips_mask, "Security"])
+        saved if pd.notna(saved) else tips_history.get((month, security), float("nan"))
+        for month, security, saved in zip(result.loc[tips_mask, "auction_month"], result.loc[tips_mask, "Security"], result.loc[tips_mask, "tail_bps"])
     ]
     return result
 
@@ -384,8 +384,8 @@ with averages:
 
 with update_tails_tab:
     st.subheader("Enter or correct an auction tail")
-    st.caption("Values are saved to auction_tails.csv in GitHub. Positive = tail, negative = stop-through, zero = on the screws. One entry per maturity per month.")
-    tenor_options = ["3-Year Note", "10-Year Note", "30-Year Bond", "20-Year Bond", "2-Year Note", "5-Year Note", "7-Year Note"]
+    st.caption("Nominal and TIPS tails are saved to auction_tails.csv in GitHub. Positive = tail, negative = stop-through, zero = on the screws. One entry per maturity per month. Saved TIPS entries override the imported historical figures.")
+    tenor_options = ["3-Year Note", "10-Year Note", "30-Year Bond", "20-Year Bond", "2-Year Note", "5-Year Note", "7-Year Note", "5-Year TIPS", "10-Year TIPS", "30-Year TIPS"]
     today = date.today()
     with st.form("tail_entry_form", clear_on_submit=False):
         tenor = st.selectbox("Auction maturity", tenor_options)
@@ -398,6 +398,8 @@ with update_tails_tab:
     matching = existing[(existing["auction_month"] == month_key) & (existing["Security"] == tenor)]
     if not matching.empty:
         st.info(f"Currently saved for {tenor}, {month_key}: {matching.iloc[0]['tail_bps']:+.2f}bps.")
+    elif tenor.endswith("TIPS"):
+        st.caption("Historical TIPS figures from the Excel import are shown until you save an updated value for the same month and maturity.")
     if submitted:
         if not matching.empty and not confirm_overwrite:
             st.warning("An entry already exists. Tick the replacement checkbox to update it.")
