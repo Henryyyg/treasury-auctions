@@ -103,7 +103,10 @@ def add_tails(frame):
 def table(df):
     names = {"auction_date":"Auction date","offering_amt":"Offering (USD bln)","primary_dealer_accepted":"Dealer accepted (USD bln)","direct_bidder_accepted":"Direct accepted (USD bln)","indirect_bidder_accepted":"Indirect accepted (USD bln)","High rate %":"High yield / discount rate (%)","bid_to_cover_ratio":"Bid-to-cover"}
     columns = ["auction_date","Security","offering_amt","primary_dealer_accepted","Dealer %","direct_bidder_accepted","Direct %","indirect_bidder_accepted","Indirect %","High rate %","bid_to_cover_ratio","Rate basis"]
-    out = df[columns].rename(columns=names).copy()
+    columns += ["tail_bps"] if "tail_bps" in df.columns else []
+    out = df[columns].rename(columns={**names, "tail_bps": "Tail / stop-through (bps)"}).copy()
+    if "Tail / stop-through (bps)" not in out.columns:
+        out["Tail / stop-through (bps)"] = float("nan")
     out["Auction date"] = out["Auction date"].dt.strftime("%d/%m/%Y")
     for col in [names[x] for x in AMOUNTS]:
         out[col] /= 1e9
@@ -157,8 +160,8 @@ def show_auction_table(frame, label, filename):
     st.subheader(label)
     st.caption(f"{len(frame):,} auctions shown. Bidder percentages use competitive accepted. Bills show the high discount rate; notes and bonds show high yield.")
     output = table(frame)
-    numeric_cols = ["Auction date", "Security", "Offering (USD bln)", "Dealer accepted (USD bln)", "Direct accepted (USD bln)", "Indirect accepted (USD bln)", "High yield / discount rate (%)", "Bid-to-cover"]
-    percentage_cols = ["Auction date", "Security", "Dealer %", "Direct %", "Indirect %"]
+    numeric_cols = ["Auction date", "Security", "Offering (USD bln)", "Dealer accepted (USD bln)", "Direct accepted (USD bln)", "Indirect accepted (USD bln)", "High yield / discount rate (%)", "Tail / stop-through (bps)", "Bid-to-cover"]
+    percentage_cols = ["Auction date", "Security", "Tail / stop-through (bps)", "Bid-to-cover", "Dealer %", "Direct %", "Indirect %"]
     st.markdown("**Auction results and amounts**")
     st.dataframe(output[numeric_cols], hide_index=True, width="stretch", height=360)
     st.markdown("**Bidder allocation percentages**")
