@@ -9,7 +9,7 @@ from pathlib import Path
 
 st.set_page_config(page_title="Treasury Auction Dashboard", layout="wide")
 API = "https://api.fiscaldata.treasury.gov/services/api/fiscal_service/v1/accounting/od/auctions_query"
-FIELDS = ["cusip","auction_date","security_type","security_term","inflation_index_security","floating_rate","offering_amt","primary_dealer_accepted","direct_bidder_accepted","indirect_bidder_accepted","comp_accepted","high_yield","high_discnt_rate","bid_to_cover_ratio"]
+FIELDS = ["cusip","auction_date","security_type","security_term","inflation_index_security","floating_rate","offering_amt","primary_dealer_accepted","direct_bidder_accepted","indirect_bidder_accepted","comp_accepted","high_yield","high_discnt_rate","high_discnt_margin","bid_to_cover_ratio"]
 AMOUNTS = ["offering_amt","primary_dealer_accepted","direct_bidder_accepted","indirect_bidder_accepted"]
 NUMERIC = AMOUNTS + ["comp_accepted","high_yield","high_discnt_rate","bid_to_cover_ratio"]
 
@@ -32,6 +32,22 @@ def canonical_security(row):
     kind = str(row["security_type"] or "").strip()
     if kind == "Bill":
         return f"{term} Bill".strip()
+    if kind == "FRN":
+        return "2-Year FRN"
+    if kind == "TIPS":
+        match = re.match(r"^(\\d+)-Year", term, re.IGNORECASE)
+        if not match:
+            return f"{term} TIPS"
+        years = int(match.group(1))
+        month_match = re.search(r"(\\d+)-Month", term, re.IGNORECASE)
+        months = int(month_match.group(1)) if month_match else 0
+        if years in (5, 10, 30) and months == 0:
+            benchmark = years
+        elif years + 1 in (5, 10, 30) and months > 0:
+            benchmark = years + 1
+        else:
+            benchmark = min((5, 10, 30), key=lambda x: abs(x - (years + months / 12)))
+        return f"{benchmark}-Year TIPS"
 
     match = re.match(r"^(\d+)-Year", term, re.IGNORECASE)
     if not match:
@@ -52,7 +68,7 @@ def canonical_security(row):
     return f"{years}-Year {kind}" if years in {2, 3, 5, 7, 10, 20, 30} else f"{term} {kind}"
 
 @st.cache_data(ttl=900)
-def load(days, schema_version=6):
+def load(days, schema_version=7):
     params = {"fields": ",".join(FIELDS), "filter": f"auction_date:gte:{(date.today()-timedelta(days=days)).isoformat()}", "sort":"-auction_date","page[size]":1000}
     rows = []
     with requests.Session() as session:
@@ -72,16 +88,23 @@ def load(days, schema_version=6):
     df["auction_date"] = pd.to_datetime(df["auction_date"],errors="coerce")
     for col in NUMERIC:
         df[col] = pd.to_numeric(df[col],errors="coerce")
-    df = df[df["security_type"].isin(["Bill","Note","Bond"]) & (df["auction_date"].dt.date<=date.today())].copy()
-    for flag in ["inflation_index_security","floating_rate"]:
-        df = df[~df[flag].fillna("").astype(str).str.lower().isin(["yes","true","1"])]
+    df = df[df["security_type"].isin(["Bill","Note","Bond","TIPS","FRN"]) & (df["auction_date"].dt.date<=date.today())].copy()
+    tips = df["inflation_index_security"].fillna("").astype(str).str.lower().isin(["yes","true","1"]) | df["security_type"].eq("TIPS")
+    frns = df["floating_rate"].fillna("").astype(str).str.lower().isin(["yes","true","1"]) | df["security_type"].eq("FRN")
+    df["Auction class"] = "Nominal"
+    df.loc[tips, "Auction class"] = "TIPS"
+    df.loc[frns & ~tips, "Auction class"] = "FRN"
+    df.loc[tips, "security_type"] = "TIPS"
+    df.loc[frns & ~tips, "security_type"] = "FRN"
     df = df[df["bid_to_cover_ratio"].notna()].copy()
     df["Security"] = df.apply(canonical_security, axis=1)
     df["Bill category"] = df["security_term"].apply(bill_category).where(df["security_type"].eq("Bill"), "")
     for label,field in [("Dealer %","primary_dealer_accepted"),("Direct %","direct_bidder_accepted"),("Indirect %","indirect_bidder_accepted")]:
         df[label] = df[field]/df["comp_accepted"].where(df["comp_accepted"]>0)*100
-    df["High rate %"] = df["high_discnt_rate"].where(df["security_type"].eq("Bill"),df["high_yield"])
-    df["Rate basis"] = df["security_type"].map({"Bill":"Discount rate","Note":"Yield","Bond":"Yield"})
+    df["High rate %"] = df["high_yield"]
+    df.loc[df["security_type"].eq("Bill"), "High rate %"] = df["high_discnt_rate"]
+    df.loc[df["Auction class"].eq("FRN"), "High rate %"] = df["high_discnt_margin"]
+    df["Rate basis"] = df["security_type"].map({"Bill":"Discount rate","Note":"Yield","Bond":"Yield","TIPS":"Real yield","FRN":"Discount margin"})
     return df.sort_values("auction_date",ascending=False).drop_duplicates(["cusip","auction_date"])
 
 @st.cache_data(ttl=900)
@@ -97,7 +120,7 @@ def add_tails(frame):
     result = frame.copy()
     result["auction_month"] = result["auction_date"].dt.strftime("%Y-%m")
     result = result.merge(load_tails(), how="left", on=["auction_month", "Security"], validate="many_to_one")
-    result.loc[result["security_type"].eq("Bill"), "tail_bps"] = float("nan")
+    result.loc[~result["Auction class"].eq("Nominal") | result["security_type"].eq("Bill"), "tail_bps"] = float("nan")
     return result
 
 def table(df):
@@ -113,7 +136,7 @@ def table(df):
     return out
 
 st.title("US Treasury Auction Dashboard")
-st.caption("Official US Treasury FiscalData | Bills, Notes and Bonds | Cached for 15 minutes")
+st.caption("Official US Treasury FiscalData | Bills, Notes, Bonds, TIPS and FRNs | Cached for 15 minutes")
 with st.sidebar:
     days = st.selectbox("Recent-auction history", [90,180,365,730,1825,3650], index=4, format_func=lambda n: f"{n} days" if n < 365 else f"{n // 365} years")
     benchmark_days = st.selectbox("Benchmark history (years)", [2,3,5,10], index=2)
@@ -130,7 +153,7 @@ if data.empty:
     st.stop()
 st.caption(f"Latest completed auction returned by Treasury: {data.auction_date.max():%d/%m/%Y}. If newer results are missing, try Refresh data; Treasury may not have published them to FiscalData yet.")
 with st.sidebar:
-    kinds = st.multiselect("Security types",["Bill","Note","Bond"],default=["Bill","Note","Bond"])
+    kinds = st.multiselect("Security types",["Bill","Note","Bond","TIPS","FRN"],default=["Bill","Note","Bond","TIPS","FRN"])
     st.caption("Choose maturities separately inside the Bills and Notes & Bonds tabs.")
     securities = []
     custom_dates = st.checkbox("Use custom auction date range", value=False, key="custom_auction_dates_v1")
@@ -143,7 +166,7 @@ if custom_dates and len(dates)==2:
     filtered = filtered[filtered.auction_date.dt.date.between(*dates)]
 
 
-bills_tab, notes_bonds_tab, averages, update_tails_tab = st.tabs(["Bill auctions", "Notes & bonds", "Auction averages", "Update auction tails"])
+bills_tab, notes_bonds_tab, tips_tab, frn_tab, averages, update_tails_tab = st.tabs(["Bill auctions", "Notes & bonds", "TIPS", "FRNs", "Auction averages", "Update auction tails"])
 
 METRICS = {
     "Tail / stop-through (bps)": "tail_bps",
@@ -151,7 +174,7 @@ METRICS = {
     "Indirect %": "Indirect %",
     "Direct %": "Direct %",
     "Dealer %": "Dealer %",
-    "High yield / discount rate (%)": "High rate %",
+    "High yield / discount margin (%)": "High rate %",
     "Offering (USD bln)": "offering_amt",
 }
 SCALE = {"offering_amt": 1e9}
@@ -239,6 +262,34 @@ with notes_bonds_tab:
     else:
         st.info("No note or bond maturities are available.")
 
+with tips_tab:
+    st.subheader("Treasury Inflation-Protected Securities (TIPS)")
+    tips_pool = data[data["Auction class"].eq("TIPS") & data["security_type"].isin(kinds)].copy()
+    tips_options = sorted(tips_pool["Security"].dropna().unique().tolist())
+    selected_tips = st.selectbox("TIPS benchmark", tips_options, index=0 if tips_options else None, key="tips_tenor")
+    if selected_tips:
+        chosen = tips_pool[tips_pool["Security"].eq(selected_tips)]
+        visible = chosen.merge(filtered[["cusip", "auction_date"]].drop_duplicates(), on=["cusip", "auction_date"], how="inner")
+        st.caption("Reopenings grouped by original 5-, 10- or 30-year TIPS benchmark; high yield is real yield.")
+        show_history_analysis(chosen, "tips")
+        show_auction_table(visible, f"{selected_tips} auction history", "treasury_tips.csv")
+    else:
+        st.info("No TIPS auctions available.")
+
+with frn_tab:
+    st.subheader("Floating Rate Notes (FRNs)")
+    frn_pool = data[data["Auction class"].eq("FRN") & data["security_type"].isin(kinds)].copy()
+    frn_options = sorted(frn_pool["Security"].dropna().unique().tolist())
+    selected_frn = st.selectbox("FRN maturity", frn_options, index=0 if frn_options else None, key="frn_tenor")
+    if selected_frn:
+        chosen = frn_pool[frn_pool["Security"].eq(selected_frn)]
+        visible = chosen.merge(filtered[["cusip", "auction_date"]].drop_duplicates(), on=["cusip", "auction_date"], how="inner")
+        st.caption("FRN high discount margin replaces high yield. Reopenings grouped under 2-Year FRN.")
+        show_history_analysis(chosen, "frn")
+        show_auction_table(visible, f"{selected_frn} auction history", "treasury_frn.csv")
+    else:
+        st.info("No FRN auctions available.")
+
 with averages:
     average_count = st.selectbox("Average lookback (preceding auctions)", [3, 6, 10, 12], index=1,
                                  format_func=lambda n: f"{n}-auction average")
@@ -249,8 +300,12 @@ with averages:
         avg_choices.extend(bill_pool["Security"].dropna().unique().tolist())
     if any(k in kinds for k in ["Note", "Bond"]):
         avg_choices.extend(nb_pool["Security"].dropna().unique().tolist())
+    if "TIPS" in kinds:
+        avg_choices.extend(tips_pool["Security"].dropna().unique().tolist())
+    if "FRN" in kinds:
+        avg_choices.extend(frn_pool["Security"].dropna().unique().tolist())
     avg_choices = sorted(set(avg_choices))
-    default_avg = [x for x in [selected_bill, selected_note_bond] if x in avg_choices]
+    default_avg = [x for x in [selected_bill, selected_note_bond, selected_tips, selected_frn] if x in avg_choices]
     avg_selection = st.multiselect("Maturities to compare", avg_choices, default=default_avg, key="avg_maturities_v1")
     metrics = {"Dealer %":"Dealer %","Direct %":"Direct %","Indirect %":"Indirect %","High rate %":"High rate %","Bid-to-cover":"bid_to_cover_ratio","Offering (USD bln)":"offering_amt","Dealer accepted (USD bln)":"primary_dealer_accepted","Direct accepted (USD bln)":"direct_bidder_accepted","Indirect accepted (USD bln)":"indirect_bidder_accepted"}
     records = []
