@@ -93,12 +93,8 @@ def recent_treasurydirect_results(days=30):
             continue
         auction_date = first(item, "auctionDate", "competitiveClosingDate", "competitiveCloseDate")
         parsed = pd.to_datetime(auction_date, errors="coerce")
-        # Some TreasuryDirect records omit auctionDate. Bills normally
-        # auction on the business day preceding their issue date.
-        if pd.isna(parsed) and kind in ("Bill", "CMB"):
-            issue = pd.to_datetime(first(item, "issueDate"), errors="coerce")
-            if pd.notna(issue):
-                parsed = issue - pd.offsets.BDay(1)
+        # Never infer an auction date from issueDate: this can misdate
+        # Wednesday bill auctions and mislabel results.
         if pd.isna(parsed) or parsed.date() > date.today():
             continue
         cusip = first(item, "cusip")
@@ -411,6 +407,8 @@ with bills_tab:
                     } for r in matches])
                     st.dataframe(diagnostics.sort_values("Issue date", ascending=False),
                                  hide_index=True, width="stretch")
+                    st.caption("All source field names in the latest record:")
+                    st.code(", ".join(sorted(matches[0].keys())))
                     st.caption("Source fields relevant to dates, discount rates and offering:")
                     st.json({k: v for k, v in matches[0].items()
                              if any(part in k.lower() for part in ("date", "discount", "rate", "offer", "accepted"))})
