@@ -229,7 +229,7 @@ def show_auction_table(frame, label, filename):
     elif is_bill:
         output["High discount rate (%)"] = pd.to_numeric(frame["high_discnt_rate"].to_numpy(), errors="coerce")
         output["High yield (%)"] = pd.to_numeric(frame["high_yield"].to_numpy(), errors="coerce")
-        percentage_cols = ["Auction date", "Security", "Offering (USD bln)", "Bid-to-cover", "High discount rate (%)", "High yield (%)", "Dealer %", "Direct %", "Indirect %"]
+        percentage_cols = ["Auction date", "Security", "Offering (USD bln)", "High discount rate (%)", "Bid-to-cover", "High yield (%)", "Dealer %", "Direct %", "Indirect %"]
         numeric_cols.remove("Tail / stop-through (bps)")
     else:
         percentage_cols = ["Auction date", "Security", "Tail / stop-through (bps)", "Bid-to-cover", "Dealer %", "Direct %", "Indirect %"]
