@@ -125,15 +125,18 @@ except Exception as exc:
 if data.empty:
     st.warning("No completed auctions returned.")
     st.stop()
+st.caption(f"Latest completed auction returned by Treasury: {data.auction_date.max():%d/%m/%Y}. If newer results are missing, try Refresh data; Treasury may not have published them to FiscalData yet.")
 with st.sidebar:
     kinds = st.multiselect("Security types",["Bill","Note","Bond"],default=["Bill","Note","Bond"])
     st.caption("Choose maturities separately inside the Bills and Notes & Bonds tabs.")
     securities = []
-    dates = st.date_input("Auction date range", (max(data.auction_date.min().date(), date.today()-timedelta(days=days)), date.today()), min_value=data.auction_date.min().date(), max_value=date.today(), key="full_auction_date_range_v2")
+    custom_dates = st.checkbox("Use custom auction date range", value=False, key="custom_auction_dates_v1")
+    if custom_dates:
+        dates = st.date_input("Auction date range", (max(data.auction_date.min().date(), date.today()-timedelta(days=days)), date.today()), min_value=data.auction_date.min().date(), max_value=date.today(), key="custom_auction_date_range_v3")
 filtered = data[data.security_type.isin(kinds) & (data.auction_date.dt.date >= date.today()-timedelta(days=days))].copy()
 if securities:
     filtered = filtered[filtered.Security.isin(securities)]
-if len(dates)==2:
+if custom_dates and len(dates)==2:
     filtered = filtered[filtered.auction_date.dt.date.between(*dates)]
 
 
@@ -154,8 +157,13 @@ def show_auction_table(frame, label, filename):
     st.subheader(label)
     st.caption(f"{len(frame):,} auctions shown. Bidder percentages use competitive accepted. Bills show the high discount rate; notes and bonds show high yield.")
     output = table(frame)
-    st.dataframe(output, hide_index=True, width="stretch", height=480)
-    st.download_button("Download auction history CSV", output.to_csv(index=False).encode("utf-8-sig"), filename, "text/csv")
+    numeric_cols = ["Auction date", "Security", "Offering (USD bln)", "Dealer accepted (USD bln)", "Direct accepted (USD bln)", "Indirect accepted (USD bln)", "High yield / discount rate (%)", "Bid-to-cover"]
+    percentage_cols = ["Auction date", "Security", "Dealer %", "Direct %", "Indirect %"]
+    st.markdown("**Auction results and amounts**")
+    st.dataframe(output[numeric_cols], hide_index=True, width="stretch", height=360)
+    st.markdown("**Bidder allocation percentages**")
+    st.dataframe(output[percentage_cols], hide_index=True, width="stretch", height=360)
+    st.download_button("Download full auction history CSV", output.to_csv(index=False).encode("utf-8-sig"), filename, "text/csv")
 
 def show_history_analysis(frame, widget_key):
     st.subheader("Historical demand trends")
