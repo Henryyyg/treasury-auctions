@@ -67,46 +67,83 @@ def canonical_security(row):
         return f"{years + 1}-Year {kind}"
     return f"{years}-Year {kind}" if years in {2, 3, 5, 7, 10, 20, 30} else f"{term} {kind}"
 
-def recent_treasurydirect_results(days=30):
-    """Official TreasuryDirect results supplement for delayed FiscalData records."""
+def recent_treasurydirect_results(days=45):
+    """Recent completed TreasuryDirect auctions, with old/new result-field support."""
     url = "https://www.treasurydirect.gov/TA_WS/securities/auctioned"
     response = requests.get(url, params={"format": "json", "days": min(days, 90)}, timeout=25)
     response.raise_for_status()
     payload = response.json()
     if not isinstance(payload, list):
         raise ValueError("Unexpected TreasuryDirect response")
+
     def first(item, *keys):
         for key in keys:
             value = item.get(key)
-            if value is not None and str(value).strip() not in ("", "null"):
+            if value is not None and str(value).strip().lower() not in ("", "null", "none"):
                 return value
         return None
+
+    def matching(item, *groups):
+        for key, value in item.items():
+            lower = key.lower().replace("_", "")
+            if all(any(word in lower for word in group) for group in groups):
+                if value is not None and str(value).strip().lower() not in ("", "null", "none"):
+                    return value
+        return None
+
     def number(value):
         try:
             return float(str(value).replace(",", "").replace("$", "").replace("%", ""))
         except (TypeError, ValueError):
             return float("nan")
+
     records = []
     for item in payload:
         kind = str(first(item, "securityType", "type") or "")
         if kind not in ("Bill", "Note", "Bond", "TIPS", "FRN", "CMB"):
             continue
-        auction_date = first(item, "auctionDate", "competitiveClosingDate", "competitiveCloseDate")
-        parsed = pd.to_datetime(auction_date, errors="coerce")
-        # TreasuryDirect's auctioned feed sometimes omits auctionDate.
-        # Regular 17-week bills are auctioned on Wednesday, six days
-        # before their Tuesday issue date.
-        term = str(first(item, "securityTerm", "originalSecurityTerm") or "").strip().lower()
-        if pd.isna(parsed) and kind in ("Bill", "CMB") and term in ("17-week", "17 week"):
-            issue = pd.to_datetime(first(item, "issueDate"), errors="coerce")
-            if pd.notna(issue) and issue.weekday() == 1:
-                parsed = issue - pd.Timedelta(days=6)
-        if pd.isna(parsed) or parsed.date() > date.today():
+        # TreasuryDirect recently stopped populating auctionDate on some records.
+        # The competitive close date is the actual auction date, NOT issueDate.
+        raw_date = first(item, "auctionDate", "competitiveClosingDate",
+                         "competitiveCloseDate", "competitiveClosingDateTime",
+                         "competitiveCloseDateTime", "competitiveClosing")
+        if raw_date is None:
+            raw_date = matching(item, ("competitive",), ("clos",), ("date", "time"))
+        parsed = pd.to_datetime(raw_date, errors="coerce", utc=True)
+        if pd.isna(parsed):
+            # Do not invent dates from issueDate.
+            continue
+        parsed = parsed.tz_localize(None).normalize()
+        if parsed.date() > date.today():
             continue
         cusip = first(item, "cusip")
         cover = number(first(item, "bidToCoverRatio", "bidToCover"))
         if not cusip or pd.isna(cover):
             continue
+        high_yield = number(first(item, "highYield", "highYieldRate"))
+        if pd.isna(high_yield):
+            high_yield = number(matching(item, ("high",), ("yield",)))
+        high_rate = number(first(item, "highDiscountRate", "highRate"))
+        if pd.isna(high_rate):
+            high_rate = number(matching(item, ("high",), ("rate", "discount")))
+        dealer = number(first(item, "primaryDealerAccepted", "primaryDealerAcceptedAmount",
+                              "primaryDealerAcceptedCompetitive", "primaryDealerAcceptedTendered"))
+        direct = number(first(item, "directBidderAccepted", "directBidderAcceptedAmount",
+                              "directBidderAcceptedCompetitive"))
+        indirect = number(first(item, "indirectBidderAccepted", "indirectBidderAcceptedAmount",
+                                "indirectBidderAcceptedCompetitive"))
+        if pd.isna(dealer):
+            dealer = number(matching(item, ("primarydealer", "dealer"), ("accept", "award")))
+        if pd.isna(direct):
+            direct = number(matching(item, ("directbidder",), ("accept", "award")))
+        if pd.isna(indirect):
+            indirect = number(matching(item, ("indirectbidder",), ("accept", "award")))
+        competitive = number(first(item, "competitiveAccepted", "competitiveAcceptedAmount", "compAccepted"))
+        if pd.isna(competitive):
+            competitive = number(matching(item, ("competitive",), ("accept", "award")))
+        # Prefer the accepted bidder sum only when the competitive total is absent.
+        if pd.isna(competitive) and all(pd.notna(x) for x in (dealer, direct, indirect)):
+            competitive = dealer + direct + indirect
         records.append({
             "cusip": str(cusip),
             "auction_date": parsed,
@@ -115,20 +152,20 @@ def recent_treasurydirect_results(days=30):
             "inflation_index_security": "Yes" if kind == "TIPS" or str(first(item, "tips", "inflationIndexSecurity") or "").lower() in ("yes", "true") else "No",
             "floating_rate": "Yes" if kind == "FRN" or str(first(item, "floatingRate") or "").lower() in ("yes", "true") else "No",
             "offering_amt": number(first(item, "offeringAmount", "offeringAmt", "totalOfferingAmount")),
-            "primary_dealer_accepted": number(first(item, "primaryDealerAccepted", "primaryDealerAcceptedAmount", "primaryDealerAcceptedCompetitive")),
-            "direct_bidder_accepted": number(first(item, "directBidderAccepted", "directBidderAcceptedAmount", "directBidderAcceptedCompetitive")),
-            "indirect_bidder_accepted": number(first(item, "indirectBidderAccepted", "indirectBidderAcceptedAmount", "indirectBidderAcceptedCompetitive")),
-            "comp_accepted": number(first(item, "competitiveAccepted", "competitiveAcceptedAmount", "compAccepted")),
-            "high_yield": number(first(item, "highYield", "highInvestmentRate")),
-            "high_discnt_rate": number(first(item, "highDiscountRate")),
-            "high_discnt_margin": number(first(item, "highDiscountMargin")),
+            "primary_dealer_accepted": dealer,
+            "direct_bidder_accepted": direct,
+            "indirect_bidder_accepted": indirect,
+            "comp_accepted": competitive,
+            "high_yield": high_yield,
+            "high_discnt_rate": high_rate,
+            "high_discnt_margin": number(first(item, "highDiscountMargin", "highRate")),
             "bid_to_cover_ratio": cover,
         })
     return pd.DataFrame(records, columns=FIELDS)
 
 
 @st.cache_data(ttl=300)
-def load(days, schema_version=8):
+def load(days, schema_version=9):
     params = {"fields": ",".join(FIELDS), "filter": f"auction_date:gte:{(date.today()-timedelta(days=days)).isoformat()}", "sort":"-auction_date","page[size]":1000}
     rows = []
     with requests.Session() as session:
@@ -146,7 +183,7 @@ def load(days, schema_version=8):
     # TreasuryDirect publishes auction results before FiscalData has necessarily
     # filled in the corresponding results fields. Supplement only recent auctions.
     try:
-        fresh = recent_treasurydirect_results(30)
+        fresh = recent_treasurydirect_results(45)
         if not fresh.empty and not df.empty:
             # Use the exact announced FiscalData date for matching CUSIPs,
             # even if its auction results are still incomplete.
