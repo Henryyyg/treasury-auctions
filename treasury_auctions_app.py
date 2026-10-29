@@ -467,6 +467,38 @@ with bills_tab:
 with notes_bonds_tab:
     st.subheader("Treasury notes & bonds")
     nb_pool = add_tails(data[data["security_type"].isin(["Note", "Bond"]) & data["security_type"].isin(kinds)].copy())
+    with st.expander("Diagnose missing October 2026 coupon auctions"):
+        st.caption("Read-only check against FiscalData, independent of the dashboard's filters and bid-to-cover requirement.")
+        if st.button("Check raw October 2-, 5- and 20-year records", key="diagnose_oct_coupon"):
+            try:
+                diag_params = {
+                    "fields": ",".join(FIELDS),
+                    "filter": "auction_date:gte:2026-10-01,auction_date:lte:2026-10-31",
+                    "sort": "-auction_date", "page[size]": 1000,
+                }
+                diag_response = requests.get(API, params=diag_params, timeout=40)
+                diag_response.raise_for_status()
+                raw = pd.DataFrame(diag_response.json().get("data", []))
+                if raw.empty:
+                    st.warning("FiscalData returned no October records.")
+                else:
+                    raw = raw[raw["security_type"].isin(["Note", "Bond"])].copy()
+                    raw["Dashboard maturity"] = raw.apply(canonical_security, axis=1)
+                    raw = raw[raw["Dashboard maturity"].isin(["2-Year Note", "5-Year Note", "20-Year Bond"])].copy()
+                    raw["In loaded dashboard"] = raw.apply(
+                        lambda row: bool(((data["cusip"] == row["cusip"]) &
+                                          (data["auction_date"].dt.strftime("%Y-%m-%d") == str(row["auction_date"])[:10])).any()),
+                        axis=1,
+                    )
+                    st.dataframe(raw[["auction_date", "security_type", "security_term", "Dashboard maturity",
+                                      "cusip", "bid_to_cover_ratio", "high_yield", "comp_accepted",
+                                      "primary_dealer_accepted", "direct_bidder_accepted",
+                                      "indirect_bidder_accepted", "In loaded dashboard"]],
+                                 hide_index=True, width="stretch")
+                    if raw.empty:
+                        st.warning("No matching 2-, 5- or 20-year records. Check Treasury's original security terms.")
+            except (requests.RequestException, ValueError, KeyError) as exc:
+                st.error(f"October diagnostic failed: {exc}")
     nb_options = sorted(nb_pool["Security"].dropna().unique().tolist(),
                         key=lambda s: (int(re.search(r"[0-9]+", s).group()) if re.search(r"[0-9]+", s) else 999, s))
     selected_note_bond = st.selectbox("Select note or bond maturity", nb_options,
