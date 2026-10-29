@@ -217,10 +217,13 @@ def show_auction_table(frame, label, filename):
     st.subheader(label)
     st.caption(f"{len(frame):,} auctions shown. Bidder percentages use competitive accepted. Bills show the high discount rate; notes and bonds show high yield.")
     output = table(frame)
+    for percentage_column in ["Dealer %", "Direct %", "Indirect %"]:
+        output[percentage_column] = output[percentage_column].round(2)
     numeric_cols = ["Auction date", "Security", "Offering (USD bln)", "Dealer accepted (USD bln)", "Direct accepted (USD bln)", "Indirect accepted (USD bln)", "High yield / discount rate (%)", "Tail / stop-through (bps)", "Bid-to-cover"]
     percentage_cols = ["Auction date", "Security", "Tail / stop-through (bps)", "Bid-to-cover", "Dealer %", "Direct %", "Indirect %"]
     st.markdown("**Auction Results**")
-    st.dataframe(output[percentage_cols], hide_index=True, width="stretch", height=360)
+    st.dataframe(output[percentage_cols], hide_index=True, width="stretch", height=360,
+                 column_config={name: st.column_config.NumberColumn(name, format="%.2f%%") for name in ["Dealer %", "Direct %", "Indirect %"]})
     st.markdown("**Auction amounts**")
     st.dataframe(output[numeric_cols], hide_index=True, width="stretch", height=360)
     st.download_button("Download full auction history CSV", output.to_csv(index=False).encode("utf-8-sig"), filename, "text/csv")
@@ -491,9 +494,9 @@ with st.expander("Auction headline generator", expanded=False):
             tail_line,
             headline_row("High Yield", latest_auction["High rate %"], prior_six["High rate %"], "%", 3),
             headline_row("B/C", latest_auction["bid_to_cover_ratio"], prior_six["bid_to_cover_ratio"], "x", 2),
-            headline_row("Dealer", latest_auction["Dealer %"], prior_six["Dealer %"], "%", 1),
-            headline_row("Direct", latest_auction["Direct %"], prior_six["Direct %"], "%", 1),
-            headline_row("Indirect", latest_auction["Indirect %"], prior_six["Indirect %"], "%", 1),
+            headline_row("Dealer", latest_auction["Dealer %"], prior_six["Dealer %"], "%", 2),
+            headline_row("Direct", latest_auction["Direct %"], prior_six["Direct %"], "%", 2),
+            headline_row("Indirect", latest_auction["Indirect %"], prior_six["Indirect %"], "%", 2),
         ]
         headline_text = "\n".join(headline_lines)
         st.markdown(headline_text)
