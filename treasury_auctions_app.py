@@ -220,10 +220,15 @@ def show_auction_table(frame, label, filename):
     for percentage_column in ["Dealer %", "Direct %", "Indirect %"]:
         output[percentage_column] = output[percentage_column].round(2)
     numeric_cols = ["Auction date", "Security", "Offering (USD bln)", "Dealer accepted (USD bln)", "Direct accepted (USD bln)", "Indirect accepted (USD bln)", "High yield / discount rate (%)", "Tail / stop-through (bps)", "Bid-to-cover"]
-    if "Auction class" in frame.columns and not frame.empty and frame["Auction class"].eq("FRN").all():
+    is_bill = "security_type" in frame.columns and not frame.empty and frame["security_type"].eq("Bill").all()
+    is_frn = "Auction class" in frame.columns and not frame.empty and frame["Auction class"].eq("FRN").all()
+    if is_frn:
         # FRNs are quoted by high discount margin, not auction tail.
         output["High discount margin (%)"] = output["High yield / discount rate (%)"]
         percentage_cols = ["Auction date", "Security", "High discount margin (%)", "Bid-to-cover", "Dealer %", "Direct %", "Indirect %"]
+    elif is_bill:
+        percentage_cols = ["Auction date", "Security", "Bid-to-cover", "Dealer %", "Direct %", "Indirect %"]
+        numeric_cols.remove("Tail / stop-through (bps)")
     else:
         percentage_cols = ["Auction date", "Security", "Tail / stop-through (bps)", "Bid-to-cover", "Dealer %", "Direct %", "Indirect %"]
     st.markdown("**Auction Results**")
@@ -281,7 +286,10 @@ with bills_tab:
                                  placeholder="Choose a bill maturity", key="bill_maturity_single_v1")
     if selected_bill:
         chosen_bill = bill_pool[bill_pool["Security"] == selected_bill]
-        visible_bill = chosen_bill[chosen_bill.index.isin(filtered.index)]
+        # Match on auction identity, avoiding fragile row-index comparisons.
+        visible_bill = chosen_bill.merge(filtered[["cusip", "auction_date"]].drop_duplicates(),
+                                         on=["cusip", "auction_date"], how="inner")
+        st.caption(f"Latest available {selected_bill} auction in Treasury data: {chosen_bill.auction_date.max():%d/%m/%Y}. Use Refresh data in the sidebar for newly published results.")
         show_history_analysis(chosen_bill, "bill")
         show_auction_table(visible_bill, f"{selected_bill} auction history", "treasury_bill_auctions.csv")
     else:
