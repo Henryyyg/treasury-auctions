@@ -143,13 +143,13 @@ if custom_dates and len(dates)==2:
 bills_tab, notes_bonds_tab, averages, update_tails_tab = st.tabs(["Bill auctions", "Notes & bonds", "Auction averages", "Update auction tails"])
 
 METRICS = {
+    "Tail / stop-through (bps)": "tail_bps",
     "Bid-to-cover": "bid_to_cover_ratio",
     "Indirect %": "Indirect %",
     "Direct %": "Direct %",
     "Dealer %": "Dealer %",
     "High yield / discount rate (%)": "High rate %",
     "Offering (USD bln)": "offering_amt",
-    "Tail / stop-through (bps)": "tail_bps",
 }
 SCALE = {"offering_amt": 1e9}
 
@@ -282,7 +282,7 @@ with averages:
         st.info("Choose a maturity with at least one preceding auction.")
     else:
         avg = pd.DataFrame(records).sort_values("Security")
-        selected_metrics = st.multiselect("Metrics", list(metrics) + ["Tail / stop-through (bps)"],
+        selected_metrics = st.multiselect("Metrics", ["Tail / stop-through (bps)"] + list(metrics),
                                           default=["Dealer %", "Direct %", "Indirect %", "High rate %", "Bid-to-cover"],
                                           key="avg_metric_selection_v2")
         cols = ["Security", "Latest date", "Prior auctions", "Rate basis"]
