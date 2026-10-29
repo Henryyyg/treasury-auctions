@@ -93,6 +93,12 @@ def recent_treasurydirect_results(days=30):
             continue
         auction_date = first(item, "auctionDate", "competitiveClosingDate", "competitiveCloseDate")
         parsed = pd.to_datetime(auction_date, errors="coerce")
+        # Some TreasuryDirect records omit auctionDate. Bills normally
+        # auction on the business day preceding their issue date.
+        if pd.isna(parsed) and kind in ("Bill", "CMB"):
+            issue = pd.to_datetime(first(item, "issueDate"), errors="coerce")
+            if pd.notna(issue):
+                parsed = issue - pd.offsets.BDay(1)
         if pd.isna(parsed) or parsed.date() > date.today():
             continue
         cusip = first(item, "cusip")
@@ -139,6 +145,15 @@ def load(days, schema_version=8):
     # filled in the corresponding results fields. Supplement only recent auctions.
     try:
         fresh = recent_treasurydirect_results(30)
+        if not fresh.empty and not df.empty:
+            # Use the exact announced FiscalData date for matching CUSIPs,
+            # even if its auction results are still incomplete.
+            lookup = df[["cusip", "auction_date"]].dropna().copy()
+            lookup["auction_date"] = pd.to_datetime(lookup["auction_date"], errors="coerce")
+            lookup = lookup.sort_values("auction_date").drop_duplicates("cusip", keep="last")
+            dates = lookup.set_index("cusip")["auction_date"].to_dict()
+            fresh["auction_date"] = fresh.apply(
+                lambda row: dates.get(row["cusip"], row["auction_date"]), axis=1)
         if not fresh.empty:
             if df.empty:
                 df = fresh
@@ -386,6 +401,7 @@ with bills_tab:
                 if matches:
                     diagnostics = pd.DataFrame([{
                         "Auction date": r.get("auctionDate"),
+                        "Issue date": r.get("issueDate"),
                         "Security term": r.get("securityTerm"),
                         "CUSIP": r.get("cusip"),
                         "Bid-to-cover": r.get("bidToCoverRatio", r.get("bidToCover")),
@@ -393,8 +409,11 @@ with bills_tab:
                         "In dashboard": any((data["cusip"].eq(str(r.get("cusip"))) &
                                               data["auction_date"].dt.strftime("%Y-%m-%d").eq(str(r.get("auctionDate"))[:10])))
                     } for r in matches])
-                    st.dataframe(diagnostics.sort_values("Auction date", ascending=False),
+                    st.dataframe(diagnostics.sort_values("Issue date", ascending=False),
                                  hide_index=True, width="stretch")
+                    st.caption("Source fields relevant to dates, discount rates and offering:")
+                    st.json({k: v for k, v in matches[0].items()
+                             if any(part in k.lower() for part in ("date", "discount", "rate", "offer", "accepted"))})
                 else:
                     st.warning("No 17-week auctions found in the returned feed. The source response or endpoint needs checking.")
             except (requests.RequestException, ValueError, TypeError) as exc:
