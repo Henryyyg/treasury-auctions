@@ -232,7 +232,8 @@ with notes_bonds_tab:
                                      key="note_bond_maturity_single_v1")
     if selected_note_bond:
         chosen_nb = nb_pool[nb_pool["Security"] == selected_note_bond]
-        visible_nb = chosen_nb[chosen_nb.index.isin(filtered.index)]
+        # A merge in add_tails resets row indices; filter by auction identity, never DataFrame index.
+        visible_nb = chosen_nb.merge(filtered[["cusip", "auction_date"]].drop_duplicates(), on=["cusip", "auction_date"], how="inner")
         show_history_analysis(chosen_nb, "note_bond")
         show_auction_table(visible_nb, f"{selected_note_bond} auction history", "treasury_notes_bonds_auctions.csv")
     else:
