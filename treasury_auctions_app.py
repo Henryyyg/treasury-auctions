@@ -162,10 +162,10 @@ def show_auction_table(frame, label, filename):
     output = table(frame)
     numeric_cols = ["Auction date", "Security", "Offering (USD bln)", "Dealer accepted (USD bln)", "Direct accepted (USD bln)", "Indirect accepted (USD bln)", "High yield / discount rate (%)", "Tail / stop-through (bps)", "Bid-to-cover"]
     percentage_cols = ["Auction date", "Security", "Tail / stop-through (bps)", "Bid-to-cover", "Dealer %", "Direct %", "Indirect %"]
-    st.markdown("**Auction results and amounts**")
-    st.dataframe(output[numeric_cols], hide_index=True, width="stretch", height=360)
-    st.markdown("**Bidder allocation percentages**")
+    st.markdown("**Auction Results**")
     st.dataframe(output[percentage_cols], hide_index=True, width="stretch", height=360)
+    st.markdown("**Auction amounts**")
+    st.dataframe(output[numeric_cols], hide_index=True, width="stretch", height=360)
     st.download_button("Download full auction history CSV", output.to_csv(index=False).encode("utf-8-sig"), filename, "text/csv")
 
 def show_history_analysis(frame, widget_key):
