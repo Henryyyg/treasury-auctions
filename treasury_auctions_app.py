@@ -373,6 +373,33 @@ with bills_tab:
         show_auction_table(visible_bill, f"{selected_bill} auction history", "treasury_bill_auctions.csv")
     else:
         st.info("Select a bill category with available auctions.")
+    with st.expander("Diagnose missing recent bill auctions"):
+        st.caption("Compare the raw TreasuryDirect auction feed with the rows that made it into the dashboard.")
+        if st.button("Check TreasuryDirect 17-week auctions", key="check_17_week_source"):
+            try:
+                response = requests.get("https://www.treasurydirect.gov/TA_WS/securities/auctioned",
+                                        params={"format": "json", "days": 45}, timeout=25)
+                response.raise_for_status()
+                raw = response.json()
+                matches = [r for r in raw if "17-week" in str(r.get("securityTerm", "")).lower()]
+                st.write(f"TreasuryDirect returned {len(raw)} records; {len(matches)} identified as 17-week bills.")
+                if matches:
+                    diagnostics = pd.DataFrame([{
+                        "Auction date": r.get("auctionDate"),
+                        "Security term": r.get("securityTerm"),
+                        "CUSIP": r.get("cusip"),
+                        "Bid-to-cover": r.get("bidToCoverRatio", r.get("bidToCover")),
+                        "High discount rate": r.get("highDiscountRate"),
+                        "In dashboard": any((data["cusip"].eq(str(r.get("cusip"))) &
+                                              data["auction_date"].dt.strftime("%Y-%m-%d").eq(str(r.get("auctionDate"))[:10])))
+                    } for r in matches])
+                    st.dataframe(diagnostics.sort_values("Auction date", ascending=False),
+                                 hide_index=True, width="stretch")
+                else:
+                    st.warning("No 17-week auctions found in the returned feed. The source response or endpoint needs checking.")
+            except (requests.RequestException, ValueError, TypeError) as exc:
+                st.error(f"TreasuryDirect diagnostic request failed: {exc}")
+
 
 with notes_bonds_tab:
     st.subheader("Treasury notes & bonds")
