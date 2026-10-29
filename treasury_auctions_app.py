@@ -93,8 +93,14 @@ def recent_treasurydirect_results(days=30):
             continue
         auction_date = first(item, "auctionDate", "competitiveClosingDate", "competitiveCloseDate")
         parsed = pd.to_datetime(auction_date, errors="coerce")
-        # Never infer an auction date from issueDate: this can misdate
-        # Wednesday bill auctions and mislabel results.
+        # TreasuryDirect's auctioned feed sometimes omits auctionDate.
+        # Regular 17-week bills are auctioned on Wednesday, six days
+        # before their Tuesday issue date.
+        term = str(first(item, "securityTerm", "originalSecurityTerm") or "").strip().lower()
+        if pd.isna(parsed) and kind in ("Bill", "CMB") and term in ("17-week", "17 week"):
+            issue = pd.to_datetime(first(item, "issueDate"), errors="coerce")
+            if pd.notna(issue) and issue.weekday() == 1:
+                parsed = issue - pd.Timedelta(days=6)
         if pd.isna(parsed) or parsed.date() > date.today():
             continue
         cusip = first(item, "cusip")
