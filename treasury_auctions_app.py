@@ -220,7 +220,12 @@ def show_auction_table(frame, label, filename):
     for percentage_column in ["Dealer %", "Direct %", "Indirect %"]:
         output[percentage_column] = output[percentage_column].round(2)
     numeric_cols = ["Auction date", "Security", "Offering (USD bln)", "Dealer accepted (USD bln)", "Direct accepted (USD bln)", "Indirect accepted (USD bln)", "High yield / discount rate (%)", "Tail / stop-through (bps)", "Bid-to-cover"]
-    percentage_cols = ["Auction date", "Security", "Tail / stop-through (bps)", "Bid-to-cover", "Dealer %", "Direct %", "Indirect %"]
+    if "Auction class" in frame.columns and not frame.empty and frame["Auction class"].eq("FRN").all():
+        # FRNs are quoted by high discount margin, not auction tail.
+        output["High discount margin (%)"] = output["High yield / discount rate (%)"]
+        percentage_cols = ["Auction date", "Security", "High discount margin (%)", "Bid-to-cover", "Dealer %", "Direct %", "Indirect %"]
+    else:
+        percentage_cols = ["Auction date", "Security", "Tail / stop-through (bps)", "Bid-to-cover", "Dealer %", "Direct %", "Indirect %"]
     st.markdown("**Auction Results**")
     st.dataframe(output[percentage_cols], hide_index=True, width="stretch", height=360,
                  column_config={name: st.column_config.NumberColumn(name, format="%.2f%%") for name in ["Dealer %", "Direct %", "Indirect %"]})
