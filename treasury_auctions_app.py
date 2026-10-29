@@ -165,7 +165,7 @@ def recent_treasurydirect_results(days=45):
 
 
 @st.cache_data(ttl=300)
-def load(days, schema_version=9):
+def load(days, schema_version=10):
     params = {"fields": ",".join(FIELDS), "filter": f"auction_date:gte:{(date.today()-timedelta(days=days)).isoformat()}", "sort":"-auction_date","page[size]":1000}
     rows = []
     with requests.Session() as session:
@@ -183,7 +183,10 @@ def load(days, schema_version=9):
     # TreasuryDirect publishes auction results before FiscalData has necessarily
     # filled in the corresponding results fields. Supplement only recent auctions.
     try:
-        fresh = recent_treasurydirect_results(45)
+        fresh = recent_treasurydirect_results(30)
+        # Do not inject unverified coupon fields from TreasuryDirect.
+        # FiscalData remains the sole source for nominal note/bond results.
+        fresh = fresh[fresh["security_type"].eq("Bill")].copy()
         if not fresh.empty and not df.empty:
             # Use the exact announced FiscalData date for matching CUSIPs,
             # even if its auction results are still incomplete.
