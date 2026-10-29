@@ -121,6 +121,34 @@ def add_tails(frame):
     result["auction_month"] = result["auction_date"].dt.strftime("%Y-%m")
     result = result.merge(load_tails(), how="left", on=["auction_month", "Security"], validate="many_to_one")
     result.loc[~result["Auction class"].eq("Nominal") | result["security_type"].eq("Bill"), "tail_bps"] = float("nan")
+    # TIPS tails transcribed from the TIPS worksheet (2025 onward).
+    # Blank and zero spreadsheet placeholders indicate no auction.
+    tips_history = {
+        ("2025-01", "10-Year TIPS"): 1.1,
+        ("2025-02", "30-Year TIPS"): 0.3,
+        ("2025-03", "10-Year TIPS"): 0.5,
+        ("2025-04", "5-Year TIPS"): 2.2,
+        ("2025-06", "5-Year TIPS"): -1.0,
+        ("2025-07", "10-Year TIPS"): -0.5,
+        ("2025-08", "30-Year TIPS"): -2.3,
+        ("2025-09", "10-Year TIPS"): 5.0,
+        ("2025-10", "5-Year TIPS"): 1.2,
+        ("2025-11", "10-Year TIPS"): 1.4,
+        ("2025-12", "5-Year TIPS"): -0.7,
+        ("2026-01", "10-Year TIPS"): 2.0,
+        ("2026-02", "30-Year TIPS"): -1.7,
+        ("2026-03", "10-Year TIPS"): 1.6,
+        ("2026-04", "5-Year TIPS"): 0.2,
+        ("2026-05", "10-Year TIPS"): 1.9,
+        ("2026-06", "5-Year TIPS"): -0.5,
+        ("2026-07", "10-Year TIPS"): 2.8,
+        ("2026-08", "30-Year TIPS"): -1.8,
+    }
+    tips_mask = result["Auction class"].eq("TIPS")
+    result.loc[tips_mask, "tail_bps"] = [
+        tips_history.get((month, security), float("nan"))
+        for month, security in zip(result.loc[tips_mask, "auction_month"], result.loc[tips_mask, "Security"])
+    ]
     return result
 
 def table(df):
@@ -264,7 +292,7 @@ with notes_bonds_tab:
 
 with tips_tab:
     st.subheader("Treasury Inflation-Protected Securities (TIPS)")
-    tips_pool = data[data["Auction class"].eq("TIPS") & data["security_type"].isin(kinds)].copy()
+    tips_pool = add_tails(data[data["Auction class"].eq("TIPS") & data["security_type"].isin(kinds)].copy())
     tips_options = sorted(tips_pool["Security"].dropna().unique().tolist())
     selected_tips = st.selectbox("TIPS benchmark", tips_options, index=0 if tips_options else None, key="tips_tenor")
     if selected_tips:
@@ -300,8 +328,6 @@ with averages:
         avg_choices.extend(bill_pool["Security"].dropna().unique().tolist())
     if any(k in kinds for k in ["Note", "Bond"]):
         avg_choices.extend(nb_pool["Security"].dropna().unique().tolist())
-    if "TIPS" in kinds:
-        avg_choices.extend(tips_pool["Security"].dropna().unique().tolist())
     if "FRN" in kinds:
         avg_choices.extend(frn_pool["Security"].dropna().unique().tolist())
     avg_choices = sorted(set(avg_choices))
