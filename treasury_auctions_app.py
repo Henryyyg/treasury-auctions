@@ -11,7 +11,7 @@ st.set_page_config(page_title="Treasury Auction Dashboard", layout="wide")
 API = "https://api.fiscaldata.treasury.gov/services/api/fiscal_service/v1/accounting/od/auctions_query"
 FIELDS = ["cusip","auction_date","security_type","security_term","inflation_index_security","floating_rate","offering_amt","primary_dealer_accepted","direct_bidder_accepted","indirect_bidder_accepted","comp_accepted","high_yield","high_discnt_rate","high_discnt_margin","bid_to_cover_ratio"]
 AMOUNTS = ["offering_amt","primary_dealer_accepted","direct_bidder_accepted","indirect_bidder_accepted"]
-NUMERIC = AMOUNTS + ["comp_accepted","high_yield","high_discnt_rate","bid_to_cover_ratio"]
+NUMERIC = AMOUNTS + ["comp_accepted","high_yield","high_discnt_rate","high_discnt_margin","bid_to_cover_ratio"]
 
 REGULAR_BILL_WEEKS = {4, 6, 8, 13, 17, 26, 52}
 
