@@ -107,11 +107,17 @@ def load(days, schema_version=7):
     df["Rate basis"] = df["security_type"].map({"Bill":"Discount rate","Note":"Yield","Bond":"Yield","TIPS":"Real yield","FRN":"Discount margin"})
     return df.sort_values("auction_date",ascending=False).drop_duplicates(["cusip","auction_date"])
 
-@st.cache_data(ttl=900)
+@st.cache_data(ttl=60)
 def load_tails():
-    """Monthly nominal auction tails from the Auction Tails master worksheet."""
+    """Read the latest saved tails from GitHub, falling back to bundled CSV."""
     path = Path(__file__).with_name("auction_tails.csv")
-    tails = pd.read_csv(path, dtype={"auction_month": str, "Security": str})
+    try:
+        url = "https://raw.githubusercontent.com/Henryyyg/treasury-auctions/main/auction_tails.csv"
+        response = requests.get(url, params={"refresh": int(pd.Timestamp.now().timestamp() // 60)}, timeout=12)
+        response.raise_for_status()
+        tails = pd.read_csv(io.StringIO(response.text), dtype={"auction_month": str, "Security": str})
+    except (requests.RequestException, ValueError, pd.errors.ParserError):
+        tails = pd.read_csv(path, dtype={"auction_month": str, "Security": str})
     tails["tail_bps"] = pd.to_numeric(tails["tail_bps"], errors="coerce")
     return tails.dropna(subset=["tail_bps"]).drop_duplicates(["auction_month", "Security"], keep="last")
 
@@ -442,6 +448,7 @@ with update_tails_tab:
                     st.error(f"Could not save the figure: {type(exc).__name__}. Please retry; no change was confirmed.")
     st.divider()
     st.subheader("Recently saved tails")
+    st.caption("Shows the most recent entries saved in GitHub. Updates normally appear within about one minute.")
     recent = load_tails().sort_values(["auction_month", "Security"], ascending=[False, True]).head(21).copy()
     st.dataframe(recent.rename(columns={"auction_month": "Auction month", "Security": "Maturity", "tail_bps": "Tail (bps)"}), hide_index=True, width="stretch")
 
