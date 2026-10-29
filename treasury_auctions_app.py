@@ -35,11 +35,11 @@ def canonical_security(row):
     if kind == "FRN":
         return "2-Year FRN"
     if kind == "TIPS":
-        match = re.match(r"^(\\d+)-Year", term, re.IGNORECASE)
+        match = re.match(r"^(\d+)-Year", term, re.IGNORECASE)
         if not match:
             return f"{term} TIPS"
         years = int(match.group(1))
-        month_match = re.search(r"(\\d+)-Month", term, re.IGNORECASE)
+        month_match = re.search(r"(\d+)-Month", term, re.IGNORECASE)
         months = int(month_match.group(1)) if month_match else 0
         if years in (5, 10, 30) and months == 0:
             benchmark = years
