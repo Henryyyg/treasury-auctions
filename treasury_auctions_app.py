@@ -67,8 +67,60 @@ def canonical_security(row):
         return f"{years + 1}-Year {kind}"
     return f"{years}-Year {kind}" if years in {2, 3, 5, 7, 10, 20, 30} else f"{term} {kind}"
 
-@st.cache_data(ttl=900)
-def load(days, schema_version=7):
+def recent_treasurydirect_results(days=30):
+    """Official TreasuryDirect results supplement for delayed FiscalData records."""
+    url = "https://www.treasurydirect.gov/TA_WS/securities/auctioned"
+    response = requests.get(url, params={"format": "json", "days": min(days, 90)}, timeout=25)
+    response.raise_for_status()
+    payload = response.json()
+    if not isinstance(payload, list):
+        raise ValueError("Unexpected TreasuryDirect response")
+    def first(item, *keys):
+        for key in keys:
+            value = item.get(key)
+            if value is not None and str(value).strip() not in ("", "null"):
+                return value
+        return None
+    def number(value):
+        try:
+            return float(str(value).replace(",", "").replace("$", "").replace("%", ""))
+        except (TypeError, ValueError):
+            return float("nan")
+    records = []
+    for item in payload:
+        kind = str(first(item, "securityType", "type") or "")
+        if kind not in ("Bill", "Note", "Bond", "TIPS", "FRN", "CMB"):
+            continue
+        auction_date = first(item, "auctionDate", "competitiveClosingDate", "competitiveCloseDate")
+        parsed = pd.to_datetime(auction_date, errors="coerce")
+        if pd.isna(parsed) or parsed.date() > date.today():
+            continue
+        cusip = first(item, "cusip")
+        cover = number(first(item, "bidToCoverRatio", "bidToCover"))
+        if not cusip or pd.isna(cover):
+            continue
+        records.append({
+            "cusip": str(cusip),
+            "auction_date": parsed,
+            "security_type": "Bill" if kind == "CMB" else ("Note" if kind in ("TIPS", "FRN") else kind),
+            "security_term": first(item, "securityTerm", "originalSecurityTerm") or "",
+            "inflation_index_security": "Yes" if kind == "TIPS" or str(first(item, "tips", "inflationIndexSecurity") or "").lower() in ("yes", "true") else "No",
+            "floating_rate": "Yes" if kind == "FRN" or str(first(item, "floatingRate") or "").lower() in ("yes", "true") else "No",
+            "offering_amt": number(first(item, "offeringAmount", "offeringAmt", "totalOfferingAmount")),
+            "primary_dealer_accepted": number(first(item, "primaryDealerAccepted", "primaryDealerAcceptedAmount", "primaryDealerAcceptedCompetitive")),
+            "direct_bidder_accepted": number(first(item, "directBidderAccepted", "directBidderAcceptedAmount", "directBidderAcceptedCompetitive")),
+            "indirect_bidder_accepted": number(first(item, "indirectBidderAccepted", "indirectBidderAcceptedAmount", "indirectBidderAcceptedCompetitive")),
+            "comp_accepted": number(first(item, "competitiveAccepted", "competitiveAcceptedAmount", "compAccepted")),
+            "high_yield": number(first(item, "highYield", "highInvestmentRate")),
+            "high_discnt_rate": number(first(item, "highDiscountRate")),
+            "high_discnt_margin": number(first(item, "highDiscountMargin")),
+            "bid_to_cover_ratio": cover,
+        })
+    return pd.DataFrame(records, columns=FIELDS)
+
+
+@st.cache_data(ttl=300)
+def load(days, schema_version=8):
     params = {"fields": ",".join(FIELDS), "filter": f"auction_date:gte:{(date.today()-timedelta(days=days)).isoformat()}", "sort":"-auction_date","page[size]":1000}
     rows = []
     with requests.Session() as session:
@@ -83,6 +135,29 @@ def load(days, schema_version=7):
             if not batch or len(batch)<1000:
                 break
     df = pd.DataFrame(rows)
+    # TreasuryDirect publishes auction results before FiscalData has necessarily
+    # filled in the corresponding results fields. Supplement only recent auctions.
+    try:
+        fresh = recent_treasurydirect_results(30)
+        if not fresh.empty:
+            if df.empty:
+                df = fresh
+            else:
+                # Prefer TreasuryDirect for recent auctions only when FiscalData
+                # has not yet populated a bid-to-cover ratio.
+                known = df[["cusip", "auction_date", "bid_to_cover_ratio"]].copy()
+                known["auction_date"] = pd.to_datetime(known["auction_date"], errors="coerce").dt.normalize()
+                known["bid_to_cover_ratio"] = pd.to_numeric(known["bid_to_cover_ratio"], errors="coerce")
+                valid_keys = set(zip(known.loc[known["bid_to_cover_ratio"].notna(), "cusip"],
+                                     known.loc[known["bid_to_cover_ratio"].notna(), "auction_date"]))
+                fresh = fresh[~fresh.apply(lambda row: (row["cusip"], row["auction_date"].normalize()) in valid_keys, axis=1)]
+                # Remove incomplete FiscalData versions of the same auction.
+                fresh_keys = set(zip(fresh["cusip"], fresh["auction_date"].dt.normalize()))
+                df = df[~known.apply(lambda row: (row["cusip"], row["auction_date"]) in fresh_keys, axis=1)].copy()
+                df = pd.concat([df, fresh], ignore_index=True)
+    except (requests.RequestException, ValueError, KeyError, TypeError) as exc:
+        # Historical FiscalData must remain available if TreasuryDirect is down.
+        st.warning(f"TreasuryDirect recent-results supplement unavailable ({type(exc).__name__}); showing FiscalData results.")
     if df.empty:
         return df
     df["auction_date"] = pd.to_datetime(df["auction_date"],errors="coerce")
@@ -170,7 +245,7 @@ def table(df):
     return out
 
 st.title("US Treasury Auction Dashboard")
-st.caption("Official US Treasury FiscalData | Bills, Notes, Bonds, TIPS and FRNs | Cached for 15 minutes")
+st.caption("Official Treasury FiscalData history + TreasuryDirect recent-results supplement | Cached for 5 minutes")
 with st.sidebar:
     days = st.selectbox("Recent-auction history", [90,180,365,730,1825,3650], index=4, format_func=lambda n: f"{n} days" if n < 365 else f"{n // 365} years")
     benchmark_days = st.selectbox("Benchmark history (years)", [2,3,5,10], index=2)
