@@ -499,6 +499,96 @@ with notes_bonds_tab:
                         st.warning("No matching 2-, 5- or 20-year records. Check Treasury's original security terms.")
             except (requests.RequestException, ValueError, KeyError) as exc:
                 st.error(f"October diagnostic failed: {exc}")
+    with st.expander("TreasuryDirect coupon source check (read-only)"):
+        st.caption("Diagnostic only. Does not change auction tables, history, averages or the data feed.")
+        if st.button("Compare TreasuryDirect and FiscalData coupon records", key="compare_coupon_sources"):
+            try:
+                td_response = requests.get(
+                    "https://www.treasurydirect.gov/TA_WS/securities/auctioned",
+                    params={"format": "json", "days": 60}, timeout=30
+                )
+                td_response.raise_for_status()
+                td_items = td_response.json()
+                if not isinstance(td_items, list):
+                    raise ValueError("TreasuryDirect did not return a list")
+                fd_response = requests.get(
+                    API,
+                    params={"fields": ",".join(FIELDS),
+                            "filter": "auction_date:gte:2026-10-01",
+                            "sort": "-auction_date", "page[size]": 1000},
+                    timeout=40
+                )
+                fd_response.raise_for_status()
+                fd_items = fd_response.json().get("data", [])
+                fd_lookup = {
+                    (str(item.get("cusip", "")).strip(),
+                     str(item.get("auction_date", ""))[:10]): item
+                    for item in fd_items
+                }
+                def first_present(item, *names):
+                    for name in names:
+                        value = item.get(name)
+                        if value is not None and str(value).strip().lower() not in ("", "null", "none"):
+                            return value
+                    return None
+                def number_or_none(value):
+                    try:
+                        return float(str(value).replace(",", "").replace("%", ""))
+                    except (TypeError, ValueError):
+                        return None
+                comparisons = []
+                for item in td_items:
+                    kind = str(item.get("securityType", ""))
+                    if kind not in ("Note", "Bond"):
+                        continue
+                    term = str(item.get("securityTerm") or item.get("originalSecurityTerm") or "")
+                    label = canonical_security({"security_term": term, "security_type": kind})
+                    if label not in {"2-Year Note", "3-Year Note", "5-Year Note",
+                                     "7-Year Note", "10-Year Note", "20-Year Bond", "30-Year Bond"}:
+                        continue
+                    raw_date = first_present(item, "auctionDate", "competitiveClosingDate",
+                                             "competitiveCloseDate", "competitiveClosingDateTime",
+                                             "competitiveCloseDateTime")
+                    auction_dt = pd.to_datetime(raw_date, errors="coerce", utc=True)
+                    if pd.isna(auction_dt) or auction_dt.date() < date(2026, 10, 1):
+                        continue
+                    auction_date = auction_dt.strftime("%Y-%m-%d")
+                    cusip = str(item.get("cusip", "")).strip()
+                    fd = fd_lookup.get((cusip, auction_date), {})
+                    fields = {
+                        "High yield": (first_present(item, "highYield", "highYieldRate"), fd.get("high_yield")),
+                        "Bid-to-cover": (first_present(item, "bidToCoverRatio", "bidToCover"), fd.get("bid_to_cover_ratio")),
+                        "Dealer accepted": (first_present(item, "primaryDealerAccepted", "primaryDealerAcceptedAmount",
+                                                           "primaryDealerAcceptedCompetitive"), fd.get("primary_dealer_accepted")),
+                        "Direct accepted": (first_present(item, "directBidderAccepted", "directBidderAcceptedAmount",
+                                                           "directBidderAcceptedCompetitive"), fd.get("direct_bidder_accepted")),
+                        "Indirect accepted": (first_present(item, "indirectBidderAccepted", "indirectBidderAcceptedAmount",
+                                                             "indirectBidderAcceptedCompetitive"), fd.get("indirect_bidder_accepted")),
+                    }
+                    row = {"Auction date": auction_date, "Maturity": label, "CUSIP": cusip,
+                           "FiscalData record found": bool(fd)}
+                    for name, (td_value, fd_value) in fields.items():
+                        row["TD " + name] = td_value
+                        row["FD " + name] = fd_value
+                        td_num, fd_num = number_or_none(td_value), number_or_none(fd_value)
+                        row[name + " agrees"] = (
+                            abs(td_num - fd_num) <= max(1e-7, abs(fd_num) * 1e-7)
+                            if td_num is not None and fd_num is not None else None
+                        )
+                    comparisons.append(row)
+                if comparisons:
+                    st.dataframe(pd.DataFrame(comparisons).sort_values(
+                        ["Auction date", "Maturity"], ascending=[False, True]),
+                        hide_index=True, width="stretch")
+                    st.caption("TD = TreasuryDirect; FD = FiscalData. Blank comparison means at least one source lacks a value. Values are raw source fields, not adjusted or used by the dashboard.")
+                    st.caption("Raw field names on a TreasuryDirect coupon record:")
+                    sample = next((item for item in td_items if item.get("securityType") in ("Note", "Bond")), None)
+                    if sample:
+                        st.code(", ".join(sorted(sample.keys())))
+                else:
+                    st.warning("No matching October/November coupon records found in the TreasuryDirect response. No live data was changed.")
+            except (requests.RequestException, ValueError, TypeError, KeyError) as exc:
+                st.error(f"Read-only comparison failed: {exc}")
     nb_options = sorted(nb_pool["Security"].dropna().unique().tolist(),
                         key=lambda s: (int(re.search(r"[0-9]+", s).group()) if re.search(r"[0-9]+", s) else 999, s))
     selected_note_bond = st.selectbox("Select note or bond maturity", nb_options,
