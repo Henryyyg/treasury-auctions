@@ -225,8 +225,74 @@ def verified_treasurydirect_coupons(days=90):
     return pd.DataFrame(records, columns=FIELDS).drop_duplicates(["cusip", "auction_date"])
 
 
+def verified_treasurydirect_other(days=90):
+    """Verified TreasuryDirect awarded fields for bills, TIPS and FRNs."""
+    response = requests.get(
+        "https://www.treasurydirect.gov/TA_WS/securities/auctioned",
+        params={"format": "json", "days": min(days, 90)}, timeout=30,
+    )
+    response.raise_for_status()
+    payload = response.json()
+    if not isinstance(payload, list):
+        raise ValueError("Unexpected TreasuryDirect response")
+    records = []
+    for item in payload:
+        kind = item.get("securityType")
+        is_tips = item.get("inflationProtected") == "Yes"
+        is_frn = item.get("floatingRate") == "Yes"
+        is_bill = kind in ("Bill", "CMB")
+        if not (is_bill or is_tips or is_frn):
+            continue
+        auction_date = pd.to_datetime(item.get("competitiveAuctionCloseDate"), errors="coerce")
+        if pd.isna(auction_date) or auction_date.date() > date.today():
+            continue
+        def num(key):
+            return pd.to_numeric(item.get(key), errors="coerce")
+        dealer = num("primaryDealersCompetitiveParAwarded")
+        direct = num("directBiddersCompetitiveParAwarded")
+        indirect = num("indirectBiddersCompetitiveParAwarded")
+        competitive = num("subtotalCompetitiveParAwardedInsideOfOfferingAmount")
+        cover = num("bidToCoverRatio")
+        offering = num("offeringAmount")
+        if not item.get("cusip") or not item.get("securityTerm"):
+            continue
+        if any(pd.isna(v) for v in (dealer, direct, indirect, competitive, cover, offering)):
+            continue
+        if competitive <= 0 or cover <= 0 or offering <= 0 or min(dealer, direct, indirect) < 0:
+            continue
+        if abs(dealer + direct + indirect - competitive) > max(1, competitive * 0.00001):
+            continue
+        high_yield = num("highYield")
+        high_rate = num("highRate")
+        margin = num("highDiscountMargin")
+        if is_bill and pd.isna(high_rate):
+            continue
+        if is_tips and pd.isna(high_yield):
+            continue
+        if is_frn and pd.isna(margin):
+            continue
+        records.append({
+            "cusip": str(item["cusip"]),
+            "auction_date": auction_date.normalize(),
+            "security_type": "Bill" if is_bill else ("TIPS" if is_tips else "FRN"),
+            "security_term": item["securityTerm"],
+            "inflation_index_security": "Yes" if is_tips else "No",
+            "floating_rate": "Yes" if is_frn else "No",
+            "offering_amt": offering,
+            "primary_dealer_accepted": dealer,
+            "direct_bidder_accepted": direct,
+            "indirect_bidder_accepted": indirect,
+            "comp_accepted": competitive,
+            "high_yield": high_yield,
+            "high_discnt_rate": high_rate,
+            "high_discnt_margin": margin,
+            "bid_to_cover_ratio": cover,
+        })
+    return pd.DataFrame(records, columns=FIELDS).drop_duplicates(["cusip", "auction_date"])
+
+
 @st.cache_data(ttl=300)
-def load(days, schema_version=11):
+def load(days, schema_version=12):
     params = {"fields": ",".join(FIELDS), "filter": f"auction_date:gte:{(date.today()-timedelta(days=days)).isoformat()}", "sort":"-auction_date","page[size]":1000}
     rows = []
     fiscal_error = None
@@ -243,7 +309,7 @@ def load(days, schema_version=11):
                     break
     except (requests.RequestException, ValueError) as exc:
         fiscal_error = exc
-        st.warning("FiscalData is unavailable; recent verified TreasuryDirect note/bond results will still be shown.")
+        st.warning("FiscalData is unavailable; recent verified TreasuryDirect results will still be shown.")
     df = pd.DataFrame(rows, columns=FIELDS)
     # TreasuryDirect is authoritative for recent nominal coupon results.
     try:
@@ -257,41 +323,17 @@ def load(days, schema_version=11):
         st.warning(f"TreasuryDirect nominal coupon results unavailable ({type(exc).__name__}); retaining FiscalData history.")
     if df.empty and fiscal_error is not None:
         raise RuntimeError("Neither FiscalData nor TreasuryDirect supplied auction results.") from fiscal_error
-    # TreasuryDirect publishes auction results before FiscalData has necessarily
-    # filled in the corresponding results fields. Supplement only recent auctions.
+    # Prefer official TreasuryDirect for recent bills, TIPS and FRNs.
+    # Never infer auction dates from issue dates or accept unbalanced bidder allocations.
     try:
-        fresh = recent_treasurydirect_results(30)
-        # Do not inject unverified coupon fields from TreasuryDirect.
-        # FiscalData remains the sole source for nominal note/bond results.
-        fresh = fresh[fresh["security_type"].eq("Bill")].copy()
-        if not fresh.empty and not df.empty:
-            # Use the exact announced FiscalData date for matching CUSIPs,
-            # even if its auction results are still incomplete.
-            lookup = df[["cusip", "auction_date"]].dropna().copy()
-            lookup["auction_date"] = pd.to_datetime(lookup["auction_date"], errors="coerce")
-            lookup = lookup.sort_values("auction_date").drop_duplicates("cusip", keep="last")
-            dates = lookup.set_index("cusip")["auction_date"].to_dict()
-            fresh["auction_date"] = fresh.apply(
-                lambda row: dates.get(row["cusip"], row["auction_date"]), axis=1)
+        fresh = verified_treasurydirect_other(90)
         if not fresh.empty:
-            if df.empty:
-                df = fresh
-            else:
-                # Prefer TreasuryDirect for recent auctions only when FiscalData
-                # has not yet populated a bid-to-cover ratio.
-                known = df[["cusip", "auction_date", "bid_to_cover_ratio"]].copy()
-                known["auction_date"] = pd.to_datetime(known["auction_date"], errors="coerce").dt.normalize()
-                known["bid_to_cover_ratio"] = pd.to_numeric(known["bid_to_cover_ratio"], errors="coerce")
-                valid_keys = set(zip(known.loc[known["bid_to_cover_ratio"].notna(), "cusip"],
-                                     known.loc[known["bid_to_cover_ratio"].notna(), "auction_date"]))
-                fresh = fresh[~fresh.apply(lambda row: (row["cusip"], row["auction_date"].normalize()) in valid_keys, axis=1)]
-                # Remove incomplete FiscalData versions of the same auction.
-                fresh_keys = set(zip(fresh["cusip"], fresh["auction_date"].dt.normalize()))
-                df = df[~known.apply(lambda row: (row["cusip"], row["auction_date"]) in fresh_keys, axis=1)].copy()
-                df = pd.concat([df, fresh], ignore_index=True)
+            df["auction_date"] = pd.to_datetime(df["auction_date"], errors="coerce").dt.normalize()
+            fresh_keys = set(zip(fresh["cusip"], fresh["auction_date"]))
+            df = df[~df.apply(lambda row: (row["cusip"], row["auction_date"]) in fresh_keys, axis=1)].copy()
+            df = pd.concat([df, fresh], ignore_index=True)
     except (requests.RequestException, ValueError, KeyError, TypeError) as exc:
-        # Historical FiscalData must remain available if TreasuryDirect is down.
-        st.warning(f"TreasuryDirect recent-results supplement unavailable ({type(exc).__name__}); showing FiscalData results.")
+        st.warning(f"TreasuryDirect bills/TIPS/FRN results unavailable ({type(exc).__name__}); retaining FiscalData history.")
     if df.empty:
         return df
     df["auction_date"] = pd.to_datetime(df["auction_date"],errors="coerce")
@@ -386,7 +428,7 @@ def table(df):
     return out
 
 st.title("US Treasury Auction Dashboard")
-st.caption("Official Treasury FiscalData history + TreasuryDirect recent-results supplement | Cached for 5 minutes")
+st.caption("TreasuryDirect recent auction results + FiscalData historical archive | Cached for 5 minutes")
 with st.sidebar:
     days = st.selectbox("Recent-auction history", [90,180,365,730,1825,3650], index=4, format_func=lambda n: f"{n} days" if n < 365 else f"{n // 365} years")
     benchmark_days = st.selectbox("Benchmark history (years)", [2,3,5,10], index=2)
