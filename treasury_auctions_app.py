@@ -333,6 +333,8 @@ def load_tails():
     except (requests.RequestException, ValueError, KeyError, pd.errors.ParserError):
         tails = pd.read_csv(path, dtype={"auction_month": str, "Security": str})
     tails["tail_bps"] = pd.to_numeric(tails["tail_bps"], errors="coerce")
+    if "saved_tails_override" in st.session_state:
+        tails = st.session_state["saved_tails_override"].copy()
     return tails.dropna(subset=["tail_bps"]).drop_duplicates(["auction_month", "Security"], keep="last")
 
 def add_tails(frame):
@@ -802,65 +804,62 @@ with averages:
 
 with update_tails_tab:
     st.subheader("Enter or correct an auction tail")
-    st.caption("Nominal and TIPS tails are saved to auction_tails.csv in GitHub. Positive = tail, negative = stop-through, zero = on the screws. One entry per maturity per month. Saved TIPS entries override the imported historical figures.")
+    st.caption("Nominal and TIPS tails are saved to GitHub. Positive = tail, negative = stop-through, zero = on the screws. Saving an existing month and maturity automatically replaces its previous value.")
     tenor_options = ["3-Year Note", "10-Year Note", "30-Year Bond", "20-Year Bond", "2-Year Note", "5-Year Note", "7-Year Note", "5-Year TIPS", "10-Year TIPS", "30-Year TIPS"]
     today = date.today()
     with st.form("tail_entry_form", clear_on_submit=False):
         tenor = st.selectbox("Auction maturity", tenor_options)
         auction_month_date = st.date_input("Auction month (choose any date in the month)", value=today, min_value=date(2024, 1, 1), max_value=today)
         tail_value = st.number_input("Tail / stop-through (bps)", value=0.0, step=0.1, format="%.2f")
-        confirm_overwrite = st.checkbox("Allow replacement if this month's figure already exists")
         submitted = st.form_submit_button("Save tail", type="primary")
     month_key = auction_month_date.strftime("%Y-%m")
     existing = load_tails()
     matching = existing[(existing["auction_month"] == month_key) & (existing["Security"] == tenor)]
     if not matching.empty:
-        st.info(f"Currently saved for {tenor}, {month_key}: {matching.iloc[0]['tail_bps']:+.2f}bps.")
+        st.info(f"Currently saved for {tenor}, {month_key}: {matching.iloc[0]['tail_bps']:+.2f}bps. Saving will replace this value.")
     elif tenor.endswith("TIPS"):
         st.caption("Historical TIPS figures from the Excel import are shown until you save an updated value for the same month and maturity.")
     if submitted:
-        if not matching.empty and not confirm_overwrite:
-            st.warning("An entry already exists. Tick the replacement checkbox to update it.")
+        token = st.secrets.get("GITHUB_TOKEN", "")
+        if not token:
+            st.error("Saving is not configured yet. Add GITHUB_TOKEN to Streamlit app Secrets (Settings → Secrets).")
         else:
-            token = st.secrets.get("GITHUB_TOKEN", "")
-            if not token:
-                st.error("Saving is not configured yet. Add GITHUB_TOKEN to Streamlit app Secrets (Settings → Secrets).")
-            else:
-                repo_path = "Henryyyg/treasury-auctions"
-                api_url = f"https://api.github.com/repos/{repo_path}/contents/auction_tails.csv"
-                headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json",
-                           "X-GitHub-Api-Version": "2022-11-28"}
-                try:
-                    with requests.Session() as session:
-                        response = session.get(api_url, headers=headers, timeout=20)
-                        response.raise_for_status()
-                        github_file = response.json()
-                        raw_csv = base64.b64decode(github_file["content"]).decode("utf-8-sig")
-                        live = pd.read_csv(io.StringIO(raw_csv), dtype={"auction_month": str, "Security": str})
-                        already = (live["auction_month"].eq(month_key) & live["Security"].eq(tenor))
-                        if already.any() and not confirm_overwrite:
-                            st.warning("The entry already exists in GitHub. Tick the replacement checkbox to update it.")
-                        else:
-                            live = live.loc[~already, ["auction_month", "Security", "tail_bps"]].copy()
-                            new_row = pd.DataFrame([{"auction_month": month_key, "Security": tenor, "tail_bps": tail_value}])
-                            live = pd.concat([live, new_row], ignore_index=True).sort_values(["auction_month", "Security"])
-                            csv_text = live.to_csv(index=False, lineterminator="\n")
-                            payload = {"message": f"Update {tenor} tail for {month_key}",
-                                       "content": base64.b64encode(csv_text.encode("utf-8")).decode("ascii"),
-                                       "sha": github_file["sha"], "branch": "main"}
-                            saved = session.put(api_url, headers=headers, json=payload, timeout=25)
-                            saved.raise_for_status()
-                            load_tails.clear()
-                            st.success(f"Saved {tenor}, {month_key}: {tail_value:+.2f}bps to GitHub. Charts will use the new value after refresh.")
-                            st.caption("Streamlit Cloud may briefly redeploy after the GitHub commit.")
-                except requests.HTTPError as exc:
-                    code = exc.response.status_code if exc.response is not None else "unknown"
-                    st.error(f"GitHub could not save the figure (HTTP {code}). Check that the token has Contents: Read and write permission for this repository.")
-                except (requests.RequestException, ValueError, KeyError) as exc:
-                    st.error(f"Could not save the figure: {type(exc).__name__}. Please retry; no change was confirmed.")
+            api_url = "https://api.github.com/repos/Henryyyg/treasury-auctions/contents/auction_tails.csv"
+            headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json",
+                       "X-GitHub-Api-Version": "2022-11-28"}
+            try:
+                with requests.Session() as session:
+                    response = session.get(api_url, headers=headers, timeout=20)
+                    response.raise_for_status()
+                    github_file = response.json()
+                    raw_csv = base64.b64decode(github_file["content"]).decode("utf-8-sig")
+                    live = pd.read_csv(io.StringIO(raw_csv), dtype={"auction_month": str, "Security": str})
+                    already = live["auction_month"].eq(month_key) & live["Security"].eq(tenor)
+                    live = live.loc[~already, ["auction_month", "Security", "tail_bps"]].copy()
+                    new_row = pd.DataFrame([{"auction_month": month_key, "Security": tenor, "tail_bps": tail_value}])
+                    live = pd.concat([live, new_row], ignore_index=True).sort_values(["auction_month", "Security"])
+                    csv_text = live.to_csv(index=False, lineterminator="\\n")
+                    payload = {"message": f"Update {tenor} tail for {month_key}",
+                               "content": base64.b64encode(csv_text.encode("utf-8")).decode("ascii"),
+                               "sha": github_file["sha"], "branch": "main"}
+                    saved = session.put(api_url, headers=headers, json=payload, timeout=25)
+                    saved.raise_for_status()
+                    # Store the confirmed version for this session, so the current
+                    # run does not depend on GitHub/CDN propagation or a redeploy.
+                    st.session_state["saved_tails_override"] = live.copy()
+                    st.session_state["tail_save_notice"] = f"Saved {tenor}, {month_key}: {tail_value:+.2f}bps. Results updated."
+                    load_tails.clear()
+                    st.rerun()
+            except requests.HTTPError as exc:
+                code = exc.response.status_code if exc.response is not None else "unknown"
+                st.error(f"GitHub could not save the figure (HTTP {code}). No update was confirmed.")
+            except (requests.RequestException, ValueError, KeyError) as exc:
+                st.error(f"Could not save the figure: {type(exc).__name__}. No update was confirmed.")
+    if st.session_state.get("tail_save_notice"):
+        st.success(st.session_state.pop("tail_save_notice"))
     st.divider()
     st.subheader("Recently saved tails")
-    st.caption("Shows the most recent entries saved in GitHub. Updates normally appear within about one minute.")
+    st.caption("Saved values update automatically after clicking Save tail.")
     recent = load_tails().sort_values(["auction_month", "Security"], ascending=[False, True]).head(21).copy()
     st.dataframe(recent.rename(columns={"auction_month": "Auction month", "Security": "Maturity", "tail_bps": "Tail (bps)"}), hide_index=True, width="stretch")
 
