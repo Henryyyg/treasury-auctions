@@ -554,8 +554,8 @@ with bills_tab:
         visible_bill = chosen_bill.merge(filtered[["cusip", "auction_date"]].drop_duplicates(),
                                          on=["cusip", "auction_date"], how="inner")
         st.caption(f"Latest available {selected_bill} auction in Treasury data: {chosen_bill.auction_date.max():%d/%m/%Y}. Use Refresh data in the sidebar for newly published results.")
-        show_history_analysis(chosen_bill, "bill")
         show_auction_table(visible_bill, f"{selected_bill} auction history", "treasury_bill_auctions.csv")
+        show_history_analysis(chosen_bill, "bill")
     else:
         st.info("Select a bill category with available auctions.")
     with st.expander("Diagnose missing recent bill auctions"):
@@ -595,149 +595,6 @@ with bills_tab:
 with notes_bonds_tab:
     st.subheader("Treasury notes & bonds")
     nb_pool = add_tails(data[data["security_type"].isin(["Note", "Bond"]) & data["security_type"].isin(kinds)].copy())
-    with st.expander("Diagnose missing October 2026 coupon auctions"):
-        st.caption("Read-only check against FiscalData, independent of the dashboard's filters and bid-to-cover requirement.")
-        if st.button("Check raw October 2-, 5- and 20-year records", key="diagnose_oct_coupon"):
-            try:
-                diag_params = {
-                    "fields": ",".join(FIELDS),
-                    "filter": "auction_date:gte:2026-10-01,auction_date:lte:2026-10-31",
-                    "sort": "-auction_date", "page[size]": 1000,
-                }
-                diag_response = requests.get(API, params=diag_params, timeout=40)
-                diag_response.raise_for_status()
-                raw = pd.DataFrame(diag_response.json().get("data", []))
-                if raw.empty:
-                    st.warning("FiscalData returned no October records.")
-                else:
-                    raw = raw[raw["security_type"].isin(["Note", "Bond"])].copy()
-                    raw["Dashboard maturity"] = raw.apply(canonical_security, axis=1)
-                    raw = raw[raw["Dashboard maturity"].isin(["2-Year Note", "5-Year Note", "20-Year Bond"])].copy()
-                    raw["In loaded dashboard"] = raw.apply(
-                        lambda row: bool(((data["cusip"] == row["cusip"]) &
-                                          (data["auction_date"].dt.strftime("%Y-%m-%d") == str(row["auction_date"])[:10])).any()),
-                        axis=1,
-                    )
-                    st.dataframe(raw[["auction_date", "security_type", "security_term", "Dashboard maturity",
-                                      "cusip", "bid_to_cover_ratio", "high_yield", "comp_accepted",
-                                      "primary_dealer_accepted", "direct_bidder_accepted",
-                                      "indirect_bidder_accepted", "In loaded dashboard"]],
-                                 hide_index=True, width="stretch")
-                    if raw.empty:
-                        st.warning("No matching 2-, 5- or 20-year records. Check Treasury's original security terms.")
-            except (requests.RequestException, ValueError, KeyError) as exc:
-                st.error(f"October diagnostic failed: {exc}")
-    with st.expander("TreasuryDirect coupon source check (read-only)"):
-        st.caption("Diagnostic only. Does not change auction tables, history, averages or the data feed.")
-        if st.button("Compare TreasuryDirect and FiscalData coupon records", key="compare_coupon_sources"):
-            try:
-                td_response = requests.get(
-                    "https://www.treasurydirect.gov/TA_WS/securities/auctioned",
-                    params={"format": "json", "days": 60}, timeout=30
-                )
-                td_response.raise_for_status()
-                td_items = td_response.json()
-                if not isinstance(td_items, list):
-                    raise ValueError("TreasuryDirect did not return a list")
-                fd_response = requests.get(
-                    API,
-                    params={"fields": ",".join(FIELDS),
-                            "filter": "auction_date:gte:2026-10-01",
-                            "sort": "-auction_date", "page[size]": 1000},
-                    timeout=40
-                )
-                fd_response.raise_for_status()
-                fd_items = fd_response.json().get("data", [])
-                fd_lookup = {
-                    (str(item.get("cusip", "")).strip(),
-                     str(item.get("auction_date", ""))[:10]): item
-                    for item in fd_items
-                }
-                def first_present(item, *names):
-                    for name in names:
-                        value = item.get(name)
-                        if value is not None and str(value).strip().lower() not in ("", "null", "none"):
-                            return value
-                    return None
-                def number_or_none(value):
-                    try:
-                        return float(str(value).replace(",", "").replace("%", ""))
-                    except (TypeError, ValueError):
-                        return None
-                comparisons = []
-                for item in td_items:
-                    kind = str(item.get("securityType", ""))
-                    if kind not in ("Note", "Bond"):
-                        continue
-                    term = str(item.get("securityTerm") or item.get("originalSecurityTerm") or "")
-                    label = canonical_security({"security_term": term, "security_type": kind})
-                    if label not in {"2-Year Note", "3-Year Note", "5-Year Note",
-                                     "7-Year Note", "10-Year Note", "20-Year Bond", "30-Year Bond"}:
-                        continue
-                    raw_date = first_present(item, "auctionDate", "competitiveClosingDate",
-                                             "competitiveCloseDate", "competitiveClosingDateTime",
-                                             "competitiveCloseDateTime")
-                    auction_dt = pd.to_datetime(raw_date, errors="coerce", utc=True)
-                    if pd.isna(auction_dt) or auction_dt.date() < date(2026, 10, 1):
-                        continue
-                    auction_date = auction_dt.strftime("%Y-%m-%d")
-                    cusip = str(item.get("cusip", "")).strip()
-                    fd = fd_lookup.get((cusip, auction_date), {})
-                    fields = {
-                        "High yield": (first_present(item, "highYield", "highYieldRate"), fd.get("high_yield")),
-                        "Bid-to-cover": (first_present(item, "bidToCoverRatio", "bidToCover"), fd.get("bid_to_cover_ratio")),
-                        "Dealer accepted": (first_present(item, "primaryDealerAccepted", "primaryDealerAcceptedAmount",
-                                                           "primaryDealerAcceptedCompetitive"), fd.get("primary_dealer_accepted")),
-                        "Direct accepted": (first_present(item, "directBidderAccepted", "directBidderAcceptedAmount",
-                                                           "directBidderAcceptedCompetitive"), fd.get("direct_bidder_accepted")),
-                        "Indirect accepted": (first_present(item, "indirectBidderAccepted", "indirectBidderAcceptedAmount",
-                                                             "indirectBidderAcceptedCompetitive"), fd.get("indirect_bidder_accepted")),
-                    }
-                    row = {"Auction date": auction_date, "Maturity": label, "CUSIP": cusip,
-                           "FiscalData record found": bool(fd)}
-                    for name, (td_value, fd_value) in fields.items():
-                        row["TD " + name] = td_value
-                        row["FD " + name] = fd_value
-                        td_num, fd_num = number_or_none(td_value), number_or_none(fd_value)
-                        row[name + " agrees"] = (
-                            abs(td_num - fd_num) <= max(1e-7, abs(fd_num) * 1e-7)
-                            if td_num is not None and fd_num is not None else None
-                        )
-                    comparisons.append(row)
-                if comparisons:
-                    st.dataframe(pd.DataFrame(comparisons).sort_values(
-                        ["Auction date", "Maturity"], ascending=[False, True]),
-                        hide_index=True, width="stretch")
-                    st.caption("TD = TreasuryDirect; FD = FiscalData. Blank comparison means at least one source lacks a value. Values are raw source fields, not adjusted or used by the dashboard.")
-                    st.caption("Raw field names on a TreasuryDirect coupon record:")
-                    sample = next((item for item in td_items if item.get("securityType") in ("Note", "Bond")), None)
-                    if sample:
-                        st.code(", ".join(sorted(sample.keys())))
-                else:
-                    st.warning("No matching October/November coupon records found in the TreasuryDirect response. No live data was changed.")
-            except (requests.RequestException, ValueError, TypeError, KeyError) as exc:
-                st.error(f"Read-only comparison failed: {exc}")
-    with st.expander("TreasuryDirect source check (read-only)"):
-        st.caption("Inspect the official TreasuryDirect API fields before switching the live auction feed. This does not change displayed results.")
-        if st.button("Inspect recent TreasuryDirect note/bond records", key="inspect_treasurydirect_coupons"):
-            try:
-                response = requests.get("https://www.treasurydirect.gov/TA_WS/securities/auctioned",
-                                        params={"format": "json", "days": 45}, timeout=30)
-                response.raise_for_status()
-                source_rows = response.json()
-                if not isinstance(source_rows, list):
-                    raise ValueError("Unexpected TreasuryDirect response structure")
-                coupon_rows = [r for r in source_rows if str(r.get("securityType", "")).lower() in ("note", "bond")]
-                st.caption(f"TreasuryDirect returned {len(source_rows)} records, including {len(coupon_rows)} notes/bonds.")
-                if coupon_rows:
-                    st.write("Exact source field names and values (most recent note/bond record):")
-                    st.json(coupon_rows[0])
-                    st.write("Recent note/bond records (source fields, unmodified):")
-                    st.dataframe(pd.DataFrame(coupon_rows).head(15), hide_index=True, width="stretch")
-                else:
-                    st.warning("No note/bond records returned; check the API response before switching.")
-            except (requests.RequestException, ValueError, TypeError) as exc:
-                st.error(f"TreasuryDirect check failed: {exc}")
     nb_options = sorted(nb_pool["Security"].dropna().unique().tolist(),
                         key=lambda s: (int(re.search(r"[0-9]+", s).group()) if re.search(r"[0-9]+", s) else 999, s))
     selected_note_bond = st.selectbox("Select note or bond maturity", nb_options,
@@ -747,10 +604,155 @@ with notes_bonds_tab:
         chosen_nb = nb_pool[nb_pool["Security"] == selected_note_bond]
         # A merge in add_tails resets row indices; filter by auction identity, never DataFrame index.
         visible_nb = chosen_nb.merge(filtered[["cusip", "auction_date"]].drop_duplicates(), on=["cusip", "auction_date"], how="inner")
-        show_history_analysis(chosen_nb, "note_bond")
         show_auction_table(visible_nb, f"{selected_note_bond} auction history", "treasury_notes_bonds_auctions.csv")
+        show_history_analysis(chosen_nb, "note_bond")
     else:
         st.info("No note or bond maturities are available.")
+
+    with st.expander("Advanced diagnostics (TreasuryDirect and FiscalData)", expanded=False):
+        with st.expander("Diagnose missing October 2026 coupon auctions"):
+            st.caption("Read-only check against FiscalData, independent of the dashboard's filters and bid-to-cover requirement.")
+            if st.button("Check raw October 2-, 5- and 20-year records", key="diagnose_oct_coupon"):
+                try:
+                    diag_params = {
+                        "fields": ",".join(FIELDS),
+                        "filter": "auction_date:gte:2026-10-01,auction_date:lte:2026-10-31",
+                        "sort": "-auction_date", "page[size]": 1000,
+                    }
+                    diag_response = requests.get(API, params=diag_params, timeout=40)
+                    diag_response.raise_for_status()
+                    raw = pd.DataFrame(diag_response.json().get("data", []))
+                    if raw.empty:
+                        st.warning("FiscalData returned no October records.")
+                    else:
+                        raw = raw[raw["security_type"].isin(["Note", "Bond"])].copy()
+                        raw["Dashboard maturity"] = raw.apply(canonical_security, axis=1)
+                        raw = raw[raw["Dashboard maturity"].isin(["2-Year Note", "5-Year Note", "20-Year Bond"])].copy()
+                        raw["In loaded dashboard"] = raw.apply(
+                            lambda row: bool(((data["cusip"] == row["cusip"]) &
+                                              (data["auction_date"].dt.strftime("%Y-%m-%d") == str(row["auction_date"])[:10])).any()),
+                            axis=1,
+                        )
+                        st.dataframe(raw[["auction_date", "security_type", "security_term", "Dashboard maturity",
+                                          "cusip", "bid_to_cover_ratio", "high_yield", "comp_accepted",
+                                          "primary_dealer_accepted", "direct_bidder_accepted",
+                                          "indirect_bidder_accepted", "In loaded dashboard"]],
+                                     hide_index=True, width="stretch")
+                        if raw.empty:
+                            st.warning("No matching 2-, 5- or 20-year records. Check Treasury's original security terms.")
+                except (requests.RequestException, ValueError, KeyError) as exc:
+                    st.error(f"October diagnostic failed: {exc}")
+        with st.expander("TreasuryDirect coupon source check (read-only)"):
+            st.caption("Diagnostic only. Does not change auction tables, history, averages or the data feed.")
+            if st.button("Compare TreasuryDirect and FiscalData coupon records", key="compare_coupon_sources"):
+                try:
+                    td_response = requests.get(
+                        "https://www.treasurydirect.gov/TA_WS/securities/auctioned",
+                        params={"format": "json", "days": 60}, timeout=30
+                    )
+                    td_response.raise_for_status()
+                    td_items = td_response.json()
+                    if not isinstance(td_items, list):
+                        raise ValueError("TreasuryDirect did not return a list")
+                    fd_response = requests.get(
+                        API,
+                        params={"fields": ",".join(FIELDS),
+                                "filter": "auction_date:gte:2026-10-01",
+                                "sort": "-auction_date", "page[size]": 1000},
+                        timeout=40
+                    )
+                    fd_response.raise_for_status()
+                    fd_items = fd_response.json().get("data", [])
+                    fd_lookup = {
+                        (str(item.get("cusip", "")).strip(),
+                         str(item.get("auction_date", ""))[:10]): item
+                        for item in fd_items
+                    }
+                    def first_present(item, *names):
+                        for name in names:
+                            value = item.get(name)
+                            if value is not None and str(value).strip().lower() not in ("", "null", "none"):
+                                return value
+                        return None
+                    def number_or_none(value):
+                        try:
+                            return float(str(value).replace(",", "").replace("%", ""))
+                        except (TypeError, ValueError):
+                            return None
+                    comparisons = []
+                    for item in td_items:
+                        kind = str(item.get("securityType", ""))
+                        if kind not in ("Note", "Bond"):
+                            continue
+                        term = str(item.get("securityTerm") or item.get("originalSecurityTerm") or "")
+                        label = canonical_security({"security_term": term, "security_type": kind})
+                        if label not in {"2-Year Note", "3-Year Note", "5-Year Note",
+                                         "7-Year Note", "10-Year Note", "20-Year Bond", "30-Year Bond"}:
+                            continue
+                        raw_date = first_present(item, "auctionDate", "competitiveClosingDate",
+                                                 "competitiveCloseDate", "competitiveClosingDateTime",
+                                                 "competitiveCloseDateTime")
+                        auction_dt = pd.to_datetime(raw_date, errors="coerce", utc=True)
+                        if pd.isna(auction_dt) or auction_dt.date() < date(2026, 10, 1):
+                            continue
+                        auction_date = auction_dt.strftime("%Y-%m-%d")
+                        cusip = str(item.get("cusip", "")).strip()
+                        fd = fd_lookup.get((cusip, auction_date), {})
+                        fields = {
+                            "High yield": (first_present(item, "highYield", "highYieldRate"), fd.get("high_yield")),
+                            "Bid-to-cover": (first_present(item, "bidToCoverRatio", "bidToCover"), fd.get("bid_to_cover_ratio")),
+                            "Dealer accepted": (first_present(item, "primaryDealerAccepted", "primaryDealerAcceptedAmount",
+                                                               "primaryDealerAcceptedCompetitive"), fd.get("primary_dealer_accepted")),
+                            "Direct accepted": (first_present(item, "directBidderAccepted", "directBidderAcceptedAmount",
+                                                               "directBidderAcceptedCompetitive"), fd.get("direct_bidder_accepted")),
+                            "Indirect accepted": (first_present(item, "indirectBidderAccepted", "indirectBidderAcceptedAmount",
+                                                                 "indirectBidderAcceptedCompetitive"), fd.get("indirect_bidder_accepted")),
+                        }
+                        row = {"Auction date": auction_date, "Maturity": label, "CUSIP": cusip,
+                               "FiscalData record found": bool(fd)}
+                        for name, (td_value, fd_value) in fields.items():
+                            row["TD " + name] = td_value
+                            row["FD " + name] = fd_value
+                            td_num, fd_num = number_or_none(td_value), number_or_none(fd_value)
+                            row[name + " agrees"] = (
+                                abs(td_num - fd_num) <= max(1e-7, abs(fd_num) * 1e-7)
+                                if td_num is not None and fd_num is not None else None
+                            )
+                        comparisons.append(row)
+                    if comparisons:
+                        st.dataframe(pd.DataFrame(comparisons).sort_values(
+                            ["Auction date", "Maturity"], ascending=[False, True]),
+                            hide_index=True, width="stretch")
+                        st.caption("TD = TreasuryDirect; FD = FiscalData. Blank comparison means at least one source lacks a value. Values are raw source fields, not adjusted or used by the dashboard.")
+                        st.caption("Raw field names on a TreasuryDirect coupon record:")
+                        sample = next((item for item in td_items if item.get("securityType") in ("Note", "Bond")), None)
+                        if sample:
+                            st.code(", ".join(sorted(sample.keys())))
+                    else:
+                        st.warning("No matching October/November coupon records found in the TreasuryDirect response. No live data was changed.")
+                except (requests.RequestException, ValueError, TypeError, KeyError) as exc:
+                    st.error(f"Read-only comparison failed: {exc}")
+        with st.expander("TreasuryDirect source check (read-only)"):
+            st.caption("Inspect the official TreasuryDirect API fields before switching the live auction feed. This does not change displayed results.")
+            if st.button("Inspect recent TreasuryDirect note/bond records", key="inspect_treasurydirect_coupons"):
+                try:
+                    response = requests.get("https://www.treasurydirect.gov/TA_WS/securities/auctioned",
+                                            params={"format": "json", "days": 45}, timeout=30)
+                    response.raise_for_status()
+                    source_rows = response.json()
+                    if not isinstance(source_rows, list):
+                        raise ValueError("Unexpected TreasuryDirect response structure")
+                    coupon_rows = [r for r in source_rows if str(r.get("securityType", "")).lower() in ("note", "bond")]
+                    st.caption(f"TreasuryDirect returned {len(source_rows)} records, including {len(coupon_rows)} notes/bonds.")
+                    if coupon_rows:
+                        st.write("Exact source field names and values (most recent note/bond record):")
+                        st.json(coupon_rows[0])
+                        st.write("Recent note/bond records (source fields, unmodified):")
+                        st.dataframe(pd.DataFrame(coupon_rows).head(15), hide_index=True, width="stretch")
+                    else:
+                        st.warning("No note/bond records returned; check the API response before switching.")
+                except (requests.RequestException, ValueError, TypeError) as exc:
+                    st.error(f"TreasuryDirect check failed: {exc}")
 
 with tips_tab:
     st.subheader("Treasury Inflation-Protected Securities (TIPS)")
@@ -761,8 +763,8 @@ with tips_tab:
         chosen = tips_pool[tips_pool["Security"].eq(selected_tips)]
         visible = chosen.merge(filtered[["cusip", "auction_date"]].drop_duplicates(), on=["cusip", "auction_date"], how="inner")
         st.caption("Reopenings grouped by original 5-, 10- or 30-year TIPS benchmark; high yield is real yield.")
-        show_history_analysis(chosen, "tips")
         show_auction_table(visible, f"{selected_tips} auction history", "treasury_tips.csv")
+        show_history_analysis(chosen, "tips")
     else:
         st.info("No TIPS auctions available.")
 
@@ -775,8 +777,8 @@ with frn_tab:
         chosen = frn_pool[frn_pool["Security"].eq(selected_frn)]
         visible = chosen.merge(filtered[["cusip", "auction_date"]].drop_duplicates(), on=["cusip", "auction_date"], how="inner")
         st.caption("FRN high discount margin replaces high yield. Reopenings grouped under 2-Year FRN.")
-        show_history_analysis(chosen, "frn")
         show_auction_table(visible, f"{selected_frn} auction history", "treasury_frn.csv")
+        show_history_analysis(chosen, "frn")
     else:
         st.info("No FRN auctions available.")
 
