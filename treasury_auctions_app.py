@@ -596,7 +596,7 @@ def show_history_analysis(frame, widget_key):
     st.caption("Percentile compares the latest available observation for this metric with earlier observations for the benchmark; 100th means a higher numerical reading. For tails, LOWER is stronger. A higher yield or dealer take-down does not necessarily mean stronger demand. Ties receive half credit.")
 
 # Headline generator appears above the auction history tabs.
-with st.expander("Auction headline generator", expanded=False):
+with st.expander("Auction History Headline", expanded=False):
     st.caption("Previous completed auction versus the average of the six most recent completed auctions (including the previous auction). Tail observations are maintained separately and may have a different latest date.")
     bill_tenors = [f"{weeks}-Week Bill" for weeks in (4, 6, 8, 13, 17, 26, 52)]
     headline_tenors = bill_tenors + ["3-Year Note", "10-Year Note", "30-Year Bond", "20-Year Bond", "2-Year Note", "5-Year Note", "7-Year Note", "5-Year TIPS", "10-Year TIPS", "30-Year TIPS", "2-Year FRN"]
