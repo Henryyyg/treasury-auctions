@@ -589,6 +589,27 @@ with notes_bonds_tab:
                     st.warning("No matching October/November coupon records found in the TreasuryDirect response. No live data was changed.")
             except (requests.RequestException, ValueError, TypeError, KeyError) as exc:
                 st.error(f"Read-only comparison failed: {exc}")
+    with st.expander("TreasuryDirect source check (read-only)"):
+        st.caption("Inspect the official TreasuryDirect API fields before switching the live auction feed. This does not change displayed results.")
+        if st.button("Inspect recent TreasuryDirect note/bond records", key="inspect_treasurydirect_coupons"):
+            try:
+                response = requests.get("https://www.treasurydirect.gov/TA_WS/securities/auctioned",
+                                        params={"format": "json", "days": 45}, timeout=30)
+                response.raise_for_status()
+                source_rows = response.json()
+                if not isinstance(source_rows, list):
+                    raise ValueError("Unexpected TreasuryDirect response structure")
+                coupon_rows = [r for r in source_rows if str(r.get("securityType", "")).lower() in ("note", "bond")]
+                st.caption(f"TreasuryDirect returned {len(source_rows)} records, including {len(coupon_rows)} notes/bonds.")
+                if coupon_rows:
+                    st.write("Exact source field names and values (most recent note/bond record):")
+                    st.json(coupon_rows[0])
+                    st.write("Recent note/bond records (source fields, unmodified):")
+                    st.dataframe(pd.DataFrame(coupon_rows).head(15), hide_index=True, width="stretch")
+                else:
+                    st.warning("No note/bond records returned; check the API response before switching.")
+            except (requests.RequestException, ValueError, TypeError) as exc:
+                st.error(f"TreasuryDirect check failed: {exc}")
     nb_options = sorted(nb_pool["Security"].dropna().unique().tolist(),
                         key=lambda s: (int(re.search(r"[0-9]+", s).group()) if re.search(r"[0-9]+", s) else 999, s))
     selected_note_bond = st.selectbox("Select note or bond maturity", nb_options,
