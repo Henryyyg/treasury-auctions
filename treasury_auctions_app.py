@@ -164,22 +164,99 @@ def recent_treasurydirect_results(days=45):
     return pd.DataFrame(records, columns=FIELDS)
 
 
+def verified_treasurydirect_coupons(days=90):
+    """Official TreasuryDirect coupon results; use only explicitly verified awarded fields."""
+    response = requests.get(
+        "https://www.treasurydirect.gov/TA_WS/securities/auctioned",
+        params={"format": "json", "days": min(days, 90)}, timeout=30,
+    )
+    response.raise_for_status()
+    payload = response.json()
+    if not isinstance(payload, list):
+        raise ValueError("Unexpected TreasuryDirect response")
+    records = []
+    for item in payload:
+        kind = item.get("securityType")
+        if kind not in ("Note", "Bond"):
+            continue
+        # TIPS and FRNs require their own separately verified mapping.
+        if item.get("inflationProtected") == "Yes" or item.get("floatingRate") == "Yes":
+            continue
+        auction_date = pd.to_datetime(item.get("competitiveAuctionCloseDate"), errors="coerce")
+        if pd.isna(auction_date) or auction_date.date() > date.today():
+            continue
+        def amount(key):
+            return pd.to_numeric(item.get(key), errors="coerce")
+        dealer = amount("primaryDealersCompetitiveParAwarded")
+        direct = amount("directBiddersCompetitiveParAwarded")
+        indirect = amount("indirectBiddersCompetitiveParAwarded")
+        competitive = amount("subtotalCompetitiveParAwardedInsideOfOfferingAmount")
+        cover = amount("bidToCoverRatio")
+        high_yield = amount("highYield")
+        offering = amount("offeringAmount")
+        if not item.get("cusip") or not item.get("securityTerm"):
+            continue
+        if any(pd.isna(v) for v in (dealer, direct, indirect, competitive, cover, high_yield, offering)):
+            continue
+        if competitive <= 0 or cover <= 0 or offering <= 0 or high_yield < 0:
+            continue
+        if min(dealer, direct, indirect) < 0:
+            continue
+        # Never accept a bidder breakdown whose awarded amounts do not reconcile.
+        if abs((dealer + direct + indirect) - competitive) > max(1, competitive * 0.00001):
+            continue
+        records.append({
+            "cusip": str(item["cusip"]),
+            "auction_date": auction_date.normalize(),
+            "security_type": kind,
+            "security_term": item["securityTerm"],
+            "inflation_index_security": "No",
+            "floating_rate": "No",
+            "offering_amt": offering,
+            "primary_dealer_accepted": dealer,
+            "direct_bidder_accepted": direct,
+            "indirect_bidder_accepted": indirect,
+            "comp_accepted": competitive,
+            "high_yield": high_yield,
+            "high_discnt_rate": float("nan"),
+            "high_discnt_margin": float("nan"),
+            "bid_to_cover_ratio": cover,
+        })
+    return pd.DataFrame(records, columns=FIELDS).drop_duplicates(["cusip", "auction_date"])
+
+
 @st.cache_data(ttl=300)
-def load(days, schema_version=10):
+def load(days, schema_version=11):
     params = {"fields": ",".join(FIELDS), "filter": f"auction_date:gte:{(date.today()-timedelta(days=days)).isoformat()}", "sort":"-auction_date","page[size]":1000}
     rows = []
-    with requests.Session() as session:
-        for page in range(1,30):
-            params["page[number]"] = page
-            response = session.get(API,params=params,timeout=40)
-            if not response.ok:
-                raise RuntimeError(f"Treasury API HTTP {response.status_code}: {response.text[:700]}")
-            payload = response.json()
-            batch = payload.get("data",[])
-            rows.extend(batch)
-            if not batch or len(batch)<1000:
-                break
-    df = pd.DataFrame(rows)
+    fiscal_error = None
+    try:
+        with requests.Session() as session:
+            for page in range(1, 30):
+                params["page[number]"] = page
+                response = session.get(API, params=params, timeout=40)
+                response.raise_for_status()
+                payload = response.json()
+                batch = payload.get("data", [])
+                rows.extend(batch)
+                if not batch or len(batch) < 1000:
+                    break
+    except (requests.RequestException, ValueError) as exc:
+        fiscal_error = exc
+        st.warning("FiscalData is unavailable; recent verified TreasuryDirect note/bond results will still be shown.")
+    df = pd.DataFrame(rows, columns=FIELDS)
+    # TreasuryDirect is authoritative for recent nominal coupon results.
+    try:
+        coupons = verified_treasurydirect_coupons(90)
+        if not coupons.empty:
+            df["auction_date"] = pd.to_datetime(df["auction_date"], errors="coerce").dt.normalize()
+            coupon_keys = set(zip(coupons["cusip"], coupons["auction_date"]))
+            df = df[~df.apply(lambda row: (row["cusip"], row["auction_date"]) in coupon_keys, axis=1)].copy()
+            df = pd.concat([df, coupons], ignore_index=True)
+    except (requests.RequestException, ValueError, TypeError) as exc:
+        st.warning(f"TreasuryDirect nominal coupon results unavailable ({type(exc).__name__}); retaining FiscalData history.")
+    if df.empty and fiscal_error is not None:
+        raise RuntimeError("Neither FiscalData nor TreasuryDirect supplied auction results.") from fiscal_error
     # TreasuryDirect publishes auction results before FiscalData has necessarily
     # filled in the corresponding results fields. Supplement only recent auctions.
     try:
