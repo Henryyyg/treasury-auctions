@@ -318,14 +318,19 @@ def load(days, schema_version=11):
 
 @st.cache_data(ttl=60)
 def load_tails():
-    """Read the latest saved tails from GitHub, falling back to bundled CSV."""
+    """Read saved tails from GitHub Contents API, avoiding stale raw-CDN responses."""
     path = Path(__file__).with_name("auction_tails.csv")
     try:
-        url = "https://raw.githubusercontent.com/Henryyyg/treasury-auctions/main/auction_tails.csv"
-        response = requests.get(url, params={"refresh": int(pd.Timestamp.now().timestamp() // 60)}, timeout=12)
+        url = "https://api.github.com/repos/Henryyyg/treasury-auctions/contents/auction_tails.csv"
+        response = requests.get(
+            url, headers={"Accept": "application/vnd.github+json",
+                          "Cache-Control": "no-cache"}, timeout=15,
+        )
         response.raise_for_status()
-        tails = pd.read_csv(io.StringIO(response.text), dtype={"auction_month": str, "Security": str})
-    except (requests.RequestException, ValueError, pd.errors.ParserError):
+        payload = response.json()
+        raw_csv = base64.b64decode(payload["content"]).decode("utf-8-sig")
+        tails = pd.read_csv(io.StringIO(raw_csv), dtype={"auction_month": str, "Security": str})
+    except (requests.RequestException, ValueError, KeyError, pd.errors.ParserError):
         tails = pd.read_csv(path, dtype={"auction_month": str, "Security": str})
     tails["tail_bps"] = pd.to_numeric(tails["tail_bps"], errors="coerce")
     return tails.dropna(subset=["tail_bps"]).drop_duplicates(["auction_month", "Security"], keep="last")
@@ -385,6 +390,7 @@ with st.sidebar:
     benchmark_days = st.selectbox("Benchmark history (years)", [2,3,5,10], index=2)
     if st.button("Refresh data"):
         load.clear()
+        load_tails.clear()
         st.rerun()
 try:
     data = load(max(days, benchmark_days * 365))
