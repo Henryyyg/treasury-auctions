@@ -459,7 +459,6 @@ if custom_dates and len(dates)==2:
     filtered = filtered[filtered.auction_date.dt.date.between(*dates)]
 
 
-bills_tab, notes_bonds_tab, tips_tab, frn_tab, averages, update_tails_tab = st.tabs(["Bill auctions", "Notes & bonds", "TIPS", "FRNs", "Auction averages", "Update auction tails"])
 
 METRICS = {
     "Tail / stop-through (bps)": "tail_bps",
@@ -592,6 +591,8 @@ with st.expander("Auction headline generator", expanded=False):
         if len(prior_six) < 6 or (not (is_frn_headline or is_bill_headline) and not tails_for_tenor.empty and len(tails_for_tenor) < 6):
             st.warning("Fewer than six completed observations are available for at least one metric; averages use the available observations.")
 
+
+bills_tab, notes_bonds_tab, tips_tab, frn_tab, averages, update_tails_tab = st.tabs(["Bill auctions", "Notes & bonds", "TIPS", "FRNs", "Auction averages", "Update auction tails"])
 
 with bills_tab:
     st.subheader("Treasury bills")
