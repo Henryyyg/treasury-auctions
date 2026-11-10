@@ -441,12 +441,13 @@ def show_auction_table(frame, label, filename):
         percentage_cols = ["Auction date", "Security", "Offering (USD bln)", "High discount rate (%)", "Bid-to-cover", "Dealer %", "Direct %", "Indirect %"]
         numeric_cols.remove("Tail / stop-through (bps)")
     else:
-        percentage_cols = ["Auction date", "Security", "Tail / stop-through (bps)", "Bid-to-cover", "Dealer %", "Direct %", "Indirect %"]
+        output["High yield (%)"] = pd.to_numeric(frame["high_yield"].to_numpy(), errors="coerce")
+        percentage_cols = ["Auction date", "Security", "High yield (%)", "Tail / stop-through (bps)", "Bid-to-cover", "Dealer %", "Direct %", "Indirect %"]
     st.markdown("**Auction Results**")
     st.dataframe(output[percentage_cols], hide_index=True, width="stretch", height=360,
                  column_config={**{name: st.column_config.NumberColumn(name, format="%.2f%%") for name in ["Dealer %", "Direct %", "Indirect %"]},
                                 **({"High discount rate (%)": st.column_config.NumberColumn("High discount rate (%)", format="%.3f%%"),
-                                    "High yield (%)": st.column_config.NumberColumn("High yield (%)", format="%.3f%%")} if is_bill else {})})
+                                    "High yield (%)": st.column_config.NumberColumn("High yield (%)", format="%.3f%%")} if is_bill else ({"High yield (%)": st.column_config.NumberColumn("High yield (%)", format="%.3f%%")} if not is_frn else {}))})
     st.markdown("**Auction amounts**")
     st.dataframe(output[numeric_cols], hide_index=True, width="stretch", height=360)
     st.download_button("Download full auction history CSV", output.to_csv(index=False).encode("utf-8-sig"), filename, "text/csv")
