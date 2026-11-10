@@ -838,7 +838,7 @@ with update_tails_tab:
                     live = live.loc[~already, ["auction_month", "Security", "tail_bps"]].copy()
                     new_row = pd.DataFrame([{"auction_month": month_key, "Security": tenor, "tail_bps": tail_value}])
                     live = pd.concat([live, new_row], ignore_index=True).sort_values(["auction_month", "Security"])
-                    csv_text = live.to_csv(index=False, lineterminator="\\n")
+                    csv_text = live.to_csv(index=False, lineterminator="\n")
                     payload = {"message": f"Update {tenor} tail for {month_key}",
                                "content": base64.b64encode(csv_text.encode("utf-8")).decode("ascii"),
                                "sha": github_file["sha"], "branch": "main"}
