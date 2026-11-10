@@ -910,9 +910,10 @@ with update_tails_tab:
 st.divider()
 with st.expander("Auction headline generator", expanded=False):
     st.caption("Previous completed auction versus the average of the six most recent completed auctions (including the previous auction). Tail observations are maintained separately and may have a different latest date.")
-    headline_tenors = ["3-Year Note", "10-Year Note", "30-Year Bond", "20-Year Bond", "2-Year Note", "5-Year Note", "7-Year Note", "5-Year TIPS", "10-Year TIPS", "30-Year TIPS", "2-Year FRN"]
+    bill_tenors = [f"{weeks}-Week Bill" for weeks in (4, 6, 8, 13, 17, 26, 52)]
+    headline_tenors = bill_tenors + ["3-Year Note", "10-Year Note", "30-Year Bond", "20-Year Bond", "2-Year Note", "5-Year Note", "7-Year Note", "5-Year TIPS", "10-Year TIPS", "30-Year TIPS", "2-Year FRN"]
     headline_tenor = st.selectbox("Auction maturity for headline", headline_tenors, key="headline_maturity")
-    headline_data = add_tails(data[data["security_type"].isin(["Note", "Bond", "TIPS", "FRN"])].copy())
+    headline_data = add_tails(data[data["security_type"].isin(["Bill", "Note", "Bond", "TIPS", "FRN"])].copy())
     headline_group = headline_data[headline_data["Security"].eq(headline_tenor)].sort_values("auction_date", ascending=False)
     if headline_group.empty:
         st.info("No completed Treasury auctions are available for this maturity.")
@@ -920,9 +921,12 @@ with st.expander("Auction headline generator", expanded=False):
         latest_auction = headline_group.iloc[0]
         prior_six = headline_group.iloc[:6]  # Six most recent completed auctions, including latest
         tails_for_tenor = headline_group.dropna(subset=["tail_bps"]).sort_values("auction_date", ascending=False)
-        headline_label = headline_tenor.split("-Year")[0] + "-year" + (" TIPS" if headline_tenor.endswith("TIPS") else (" FRN" if headline_tenor.endswith("FRN") else ""))
+        is_bill_headline = headline_tenor.endswith("Bill")
         is_frn_headline = headline_tenor.endswith("FRN")
-        rate_label = "High Discount Margin" if is_frn_headline else ("High Real Yield" if headline_tenor.endswith("TIPS") else "High Yield")
+        headline_label = (headline_tenor.replace("-Week Bill", "-week Bill") if is_bill_headline
+                          else headline_tenor.split("-Year")[0] + "-year" + (" TIPS" if headline_tenor.endswith("TIPS") else (" FRN" if is_frn_headline else "")))
+        rate_label = ("High Discount Rate" if is_bill_headline else "High Discount Margin" if is_frn_headline
+                      else "High Real Yield" if headline_tenor.endswith("TIPS") else "High Yield")
 
         def headline_number(value, suffix="", decimals=1):
             return f"{value:.{decimals}f}{suffix}" if pd.notna(value) else "N/A"
@@ -943,8 +947,8 @@ with st.expander("Auction headline generator", expanded=False):
         headline_lines = [
             f"**{headline_label}**",
             "",
-            tail_line,
-            headline_row("High Yield", latest_auction["High rate %"], prior_six["High rate %"], "%", 3),
+            *([] if is_bill_headline or is_frn_headline else [tail_line]),
+            headline_row(rate_label, latest_auction["High rate %"], prior_six["High rate %"], "%", 3),
             headline_row("B/C", latest_auction["bid_to_cover_ratio"], prior_six["bid_to_cover_ratio"], "x", 2),
             headline_row("Dealer", latest_auction["Dealer %"], prior_six["Dealer %"], "%", 2),
             headline_row("Direct", latest_auction["Direct %"], prior_six["Direct %"], "%", 2),
@@ -954,8 +958,8 @@ with st.expander("Auction headline generator", expanded=False):
         st.markdown(headline_text)
         st.code(headline_text, language=None)
         st.caption(f"Latest completed {headline_tenor} auction: {latest_auction['auction_date']:%d/%m/%Y}. "
-                   + ("" if is_frn_headline else (f"Latest recorded tail: {latest_tail_date:%d/%m/%Y}. " if latest_tail_date is not None else "No recorded tail. "))
+                   + ("" if (is_frn_headline or is_bill_headline) else (f"Latest recorded tail: {latest_tail_date:%d/%m/%Y}. " if latest_tail_date is not None else "No recorded tail. "))
                    + f"Six-auction averages include the displayed previous observation; {len(prior_six)} completed Treasury auctions and "
-                   + ("" if is_frn_headline else f"{len(tails_for_tenor)} recorded tail observations are available."))
-        if len(prior_six) < 6 or (not is_frn_headline and not tails_for_tenor.empty and len(tails_for_tenor) < 6):
+                   + ("" if (is_frn_headline or is_bill_headline) else f"{len(tails_for_tenor)} recorded tail observations are available."))
+        if len(prior_six) < 6 or (not (is_frn_headline or is_bill_headline) and not tails_for_tenor.empty and len(tails_for_tenor) < 6):
             st.warning("Fewer than six completed observations are available for at least one metric; averages use the available observations.")
