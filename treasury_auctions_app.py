@@ -5,10 +5,53 @@ from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 import re
 import base64
+import hmac
 import io
 from pathlib import Path
 
 st.set_page_config(page_title="Treasury Auction Dashboard", layout="wide")
+
+def require_login():
+    """Restrict access using credentials stored only in Streamlit Secrets."""
+    try:
+        accounts = dict(st.secrets["auth"]["users"])
+    except (KeyError, TypeError, AttributeError):
+        accounts = {}
+    if not accounts:
+        st.title("Treasury Auction Dashboard")
+        st.error("Private access is not configured. Add [auth.users] to Streamlit app Secrets.")
+        st.stop()
+
+    if st.session_state.get("authenticated_user") not in accounts:
+        st.title("Treasury Auction Dashboard")
+        st.caption("Private access — authorised team members only")
+        with st.form("dashboard_login"):
+            username = st.text_input("Username", autocomplete="username").strip()
+            password = st.text_input("Password", type="password", autocomplete="current-password")
+            submit = st.form_submit_button("Sign in", type="primary")
+        if submit:
+            valid = False
+            # Compare every configured account to avoid revealing valid usernames.
+            for account, secret in accounts.items():
+                name_match = hmac.compare_digest(username.encode(), str(account).encode())
+                password_match = hmac.compare_digest(password.encode(), str(secret).encode())
+                valid = valid or (name_match and password_match)
+            if valid:
+                st.session_state["authenticated_user"] = username
+                st.rerun()
+            else:
+                st.error("Incorrect username or password.")
+        st.stop()
+
+    with st.sidebar:
+        st.caption(f"Signed in: {st.session_state['authenticated_user']}")
+        if st.button("Sign out"):
+            del st.session_state["authenticated_user"]
+            st.rerun()
+
+
+require_login()
+
 API = "https://api.fiscaldata.treasury.gov/services/api/fiscal_service/v1/accounting/od/auctions_query"
 FIELDS = ["cusip","auction_date","security_type","security_term","inflation_index_security","floating_rate","offering_amt","primary_dealer_accepted","direct_bidder_accepted","indirect_bidder_accepted","comp_accepted","high_yield","high_discnt_rate","high_discnt_margin","bid_to_cover_ratio"]
 AMOUNTS = ["offering_amt","primary_dealer_accepted","direct_bidder_accepted","indirect_bidder_accepted"]
