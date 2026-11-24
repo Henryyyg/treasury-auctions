@@ -475,7 +475,7 @@ def table(df):
 def scheduled_auction_refresh():
     """Refresh the active dashboard at the specified UK wall-clock times."""
     now = datetime.now(ZoneInfo("Europe/London"))
-    for hour, minute in ((16, 40), (18, 10)):
+    for hour, minute in ((16, 40), (18, 3)):
         # Allow a short window for Streamlit's periodic tick to arrive.
         minutes_after = (now.hour * 60 + now.minute) - (hour * 60 + minute)
         refresh_key = f"auction_auto_refresh_{now:%Y-%m-%d}_{hour:02d}{minute:02d}"
@@ -489,7 +489,7 @@ def scheduled_auction_refresh():
 st.title("US Treasury Auction Dashboard")
 st.caption("TreasuryDirect recent auction results + FiscalData historical archive | Cached for 5 minutes")
 scheduled_auction_refresh()
-st.caption("Automatic refresh: 16:40 and 18:10 UK time (GMT/BST), while this dashboard is open.")
+st.caption("Automatic refresh: 16:40 and 18:03 UK time (GMT/BST), while this dashboard is open.")
 with st.sidebar:
     days = st.selectbox("Recent-auction history", [90,180,365,730,1825,3650], index=4, format_func=lambda n: f"{n} days" if n < 365 else f"{n // 365} years")
     benchmark_days = st.selectbox("Benchmark history (years)", [2,3,5,10], index=2)
