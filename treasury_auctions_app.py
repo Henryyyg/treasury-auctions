@@ -684,7 +684,7 @@ def show_auction_headline(headline_tenor):
                 latest_tail_date = latest_tail["auction_date"]
     
             headline_lines = [
-                f"**{headline_label}**",
+                f"**{headline_label} (USD {latest_auction['offering_amt'] / 1e9:g}bln)**" if pd.notna(latest_auction["offering_amt"]) else f"**{headline_label} (offering N/A)**",
                 "",
                 *([] if is_bill_headline or is_frn_headline else [tail_line]),
                 headline_row(rate_label, latest_auction["High rate %"], prior_six["High rate %"], "%", 3),
