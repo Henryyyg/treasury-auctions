@@ -1025,10 +1025,28 @@ with update_tails_tab:
     st.caption("Nominal and TIPS tails are saved to GitHub. Positive = tail, negative = stop-through, zero = on the screws. Saving an existing month and maturity automatically replaces its previous value.")
     tenor_options = ["3-Year Note", "10-Year Note", "30-Year Bond", "20-Year Bond", "2-Year Note", "5-Year Note", "7-Year Note", "5-Year TIPS", "10-Year TIPS", "30-Year TIPS"]
     today = date.today()
+    st.subheader("Tail / stop-through calculator")
+    st.caption("Enter yields as percentages (e.g. 3.950). The difference is converted to basis points.")
+    wi_col, hy_col = st.columns(2)
+    with wi_col:
+        wi_yield = st.number_input("When-issued yield (WI, %)", value=None, step=0.001, format="%.3f", key="tail_calc_wi")
+    with hy_col:
+        high_yield = st.number_input("High yield (%)", value=None, step=0.001, format="%.3f", key="tail_calc_hy")
+    if wi_yield is not None and high_yield is not None:
+        calculated_tail = round((high_yield - wi_yield) * 100, 2)
+        if calculated_tail > 0:
+            st.metric("Auction result", f"{calculated_tail:.1f}bps tail")
+        elif calculated_tail < 0:
+            st.metric("Auction result", f"{abs(calculated_tail):.1f}bps stop-through")
+        else:
+            st.metric("Auction result", "On the screws (0.0bps)")
+        if st.button("Use calculated result below", key="apply_calculated_tail"):
+            st.session_state["manual_tail_bps"] = calculated_tail
+    st.divider()
     with st.form("tail_entry_form", clear_on_submit=False):
         tenor = st.selectbox("Auction maturity", tenor_options)
         auction_month_date = st.date_input("Auction month (choose any date in the month)", value=today, min_value=date(2024, 1, 1), max_value=today)
-        tail_value = st.number_input("Tail / stop-through (bps)", value=0.0, step=0.1, format="%.2f")
+        tail_value = st.number_input("Tail / stop-through (bps)", value=0.0, step=0.1, format="%.2f", key="manual_tail_bps")
         submitted = st.form_submit_button("Save tail", type="primary")
     month_key = auction_month_date.strftime("%Y-%m")
     existing = load_tails()
