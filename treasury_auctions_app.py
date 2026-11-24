@@ -649,6 +649,71 @@ def show_history_analysis(frame, widget_key):
     st.caption("Percentile compares the latest available observation for this metric with earlier observations for the benchmark; 100th means a higher numerical reading. For tails, LOWER is stronger. A higher yield or dealer take-down does not necessarily mean stronger demand. Ties receive half credit.")
 
 # Headline generator appears above the auction history tabs.
+@st.cache_data(ttl=300, show_spinner=False)
+def upcoming_announcements():
+    response = requests.get(
+        "https://www.treasurydirect.gov/TA_WS/securities/announced",
+        params={"format": "json"}, timeout=10)
+    response.raise_for_status()
+    payload = response.json()
+    if not isinstance(payload, list):
+        raise ValueError("Unexpected TreasuryDirect announcement response")
+    records = []
+    for item in payload:
+        kind = item.get("securityType")
+        if item.get("inflationProtected") == "Yes":
+            kind = "TIPS"
+        elif item.get("floatingRate") == "Yes":
+            kind = "FRN"
+        elif kind == "CMB":
+            kind = "Bill"
+        day = pd.to_datetime(item.get("auctionDate") or item.get("competitiveAuctionCloseDate"), errors="coerce")
+        amount = pd.to_numeric(item.get("offeringAmount"), errors="coerce")
+        if kind not in ("Note", "Bond", "Bill", "TIPS", "FRN") or pd.isna(day) or pd.isna(amount) or amount <= 0:
+            continue
+        security = canonical_security({"security_type": kind, "security_term": item.get("securityTerm")})
+        records.append((security, day.date(), float(amount), str(item.get("cusip") or "")))
+    return records
+
+
+# November 4, 2026 refunding guidance: USD billions, auction month.
+# https://home.treasury.gov/news/press-releases/sb0678
+# Explicitly bounded to this refunding quarter; never carry stale amounts forward.
+REFUNDING_TENORS = ("2-Year Note", "3-Year Note", "5-Year Note", "7-Year Note",
+                    "10-Year Note", "20-Year Bond", "30-Year Bond", "2-Year FRN")
+REFUNDING_MONTHS = {
+    "2026-11": (69, 58, 70, 44, 42, 16, 25, 28),
+    "2026-12": (69, 58, 70, 44, 39, 13, 22, 28),
+    "2027-01": (69, 58, 70, 44, 39, 13, 22, 30),
+}
+REFUNDING_TIPS = {
+    ("2026-11", "10-Year TIPS"): 19,
+    ("2026-12", "5-Year TIPS"): 24,
+    ("2027-01", "10-Year TIPS"): 21,
+}
+
+
+def next_offering(tenor, latest):
+    today = datetime.now(ZoneInfo("America/New_York")).date()
+    last = latest["auction_date"].date()
+    try:
+        candidates = [r for r in upcoming_announcements()
+                      if r[0] == tenor and r[1] >= today and r[1] > last]
+        if candidates:
+            _, auction_day, amount, _ = min(candidates, key=lambda r: r[1])
+            return amount / 1e9, f"TreasuryDirect announced offering — {auction_day:%d/%m/%Y}"
+    except (requests.RequestException, ValueError, TypeError, KeyError):
+        pass
+    for month, amounts in sorted(REFUNDING_MONTHS.items()):
+        if month < today.strftime("%Y-%m") or month <= last.strftime("%Y-%m"):
+            continue
+        if tenor in REFUNDING_TENORS:
+            return amounts[REFUNDING_TENORS.index(tenor)], f"Indicative {month} offering — November 4 quarterly refunding"
+        if (month, tenor) in REFUNDING_TIPS:
+            return REFUNDING_TIPS[(month, tenor)], f"Indicative {month} offering — November 4 quarterly refunding"
+    return None, "Upcoming offering not available; no historical amount substituted."
+
+
 def show_auction_headline(headline_tenor):
     with st.expander("Auction History Headline", expanded=False):
         st.caption("Previous completed auction versus the average of the six most recent completed auctions (including the previous auction). Tail observations are maintained separately and may have a different latest date.")
@@ -683,8 +748,9 @@ def show_auction_headline(headline_tenor):
                 tail_line = headline_row("Tail", latest_tail["tail_bps"], older_tails, "bps", 1)
                 latest_tail_date = latest_tail["auction_date"]
     
+            offering, offering_source = next_offering(headline_tenor, latest_auction)
             headline_lines = [
-                f"**{headline_label} (USD {latest_auction['offering_amt'] / 1e9:g}bln)**" if pd.notna(latest_auction["offering_amt"]) else f"**{headline_label} (offering N/A)**",
+                f"**{headline_label} (USD {offering:g}bln)**" if offering is not None else f"**{headline_label} (offering TBC)**",
                 "",
                 *([] if is_bill_headline or is_frn_headline else [tail_line]),
                 headline_row(rate_label, latest_auction["High rate %"], prior_six["High rate %"], "%", 3),
@@ -695,6 +761,7 @@ def show_auction_headline(headline_tenor):
             ]
             headline_text = "\n".join(headline_lines)
             st.code(headline_text, language=None)
+            st.caption(offering_source)
             st.caption(f"Latest completed {headline_tenor} auction: {latest_auction['auction_date']:%d/%m/%Y}. "
                        + ("" if (is_frn_headline or is_bill_headline) else (f"Latest recorded tail: {latest_tail_date:%d/%m/%Y}. " if latest_tail_date is not None else "No recorded tail. "))
                        + f"Six-auction averages include the displayed previous observation; {len(prior_six)} completed Treasury auctions and "
