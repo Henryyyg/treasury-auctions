@@ -208,14 +208,15 @@ def recent_treasurydirect_results(days=45):
     return pd.DataFrame(records, columns=FIELDS)
 
 
-def verified_treasurydirect_coupons(days=90):
+def verified_treasurydirect_coupons(days=90, payload=None):
     """Official TreasuryDirect coupon results; use only explicitly verified awarded fields."""
-    response = requests.get(
-        "https://www.treasurydirect.gov/TA_WS/securities/auctioned",
-        params={"format": "json", "days": min(days, 90)}, timeout=30,
-    )
-    response.raise_for_status()
-    payload = response.json()
+    if payload is None:
+        response = requests.get(
+            "https://www.treasurydirect.gov/TA_WS/securities/auctioned",
+            params={"format": "json", "days": min(days, 90)}, timeout=30,
+        )
+        response.raise_for_status()
+        payload = response.json()
     if not isinstance(payload, list):
         raise ValueError("Unexpected TreasuryDirect response")
     records = []
@@ -269,14 +270,15 @@ def verified_treasurydirect_coupons(days=90):
     return pd.DataFrame(records, columns=FIELDS).drop_duplicates(["cusip", "auction_date"])
 
 
-def verified_treasurydirect_other(days=90):
+def verified_treasurydirect_other(days=90, payload=None):
     """Verified TreasuryDirect awarded fields for bills, TIPS and FRNs."""
-    response = requests.get(
-        "https://www.treasurydirect.gov/TA_WS/securities/auctioned",
-        params={"format": "json", "days": min(days, 90)}, timeout=30,
-    )
-    response.raise_for_status()
-    payload = response.json()
+    if payload is None:
+        response = requests.get(
+            "https://www.treasurydirect.gov/TA_WS/securities/auctioned",
+            params={"format": "json", "days": min(days, 90)}, timeout=30,
+        )
+        response.raise_for_status()
+        payload = response.json()
     if not isinstance(payload, list):
         raise ValueError("Unexpected TreasuryDirect response")
     records = []
@@ -471,25 +473,76 @@ def table(df):
         out[col] /= 1e9
     return out
 
-@st.fragment(run_every="30s")
+@st.cache_data(ttl=15, show_spinner=False)
+def poll_treasury_results():
+    response = requests.get(
+        "https://www.treasurydirect.gov/TA_WS/securities/auctioned",
+        params={"format": "json", "days": 2}, timeout=10,
+    )
+    response.raise_for_status()
+    payload = response.json()
+    return pd.concat([verified_treasurydirect_coupons(payload=payload),
+                      verified_treasurydirect_other(payload=payload)], ignore_index=True)
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def announced_auction_keys(day):
+    response = requests.get(
+        "https://www.treasurydirect.gov/TA_WS/securities/announced",
+        params={"format": "json"}, timeout=10,
+    )
+    response.raise_for_status()
+    payload = response.json()
+    if not isinstance(payload, list):
+        raise ValueError("Unexpected auction schedule")
+    return {str(item["cusip"]) for item in payload
+            if item.get("cusip") and
+            str(item.get("competitiveAuctionCloseDate", ""))[:10] == day}
+
+
+@st.fragment(run_every="15s")
 def scheduled_auction_refresh():
-    """Refresh the active dashboard at the specified UK wall-clock times."""
-    now = datetime.now(ZoneInfo("Europe/London"))
-    for hour, minute in ((16, 40), (18, 3)):
-        # Allow a short window for Streamlit's periodic tick to arrive.
-        minutes_after = (now.hour * 60 + now.minute) - (hour * 60 + minute)
-        refresh_key = f"auction_auto_refresh_{now:%Y-%m-%d}_{hour:02d}{minute:02d}"
-        if 0 <= minutes_after < 5 and not st.session_state.get(refresh_key, False):
-            st.session_state[refresh_key] = True
+    now = datetime.now(ZoneInfo("America/New_York"))
+    day = now.date().isoformat()
+    minute = now.hour * 60 + now.minute
+    # 11:31 and 13:01 ET track US auction times even during UK/US DST gaps.
+    if now.weekday() >= 5 or not (691 <= minute < 751 or 781 <= minute < 841):
+        st.caption("Auction monitor: standing by for the next release window.")
+        return
+    session_key = f"auction_monitor_{day}"
+    seen = set(st.session_state.get(session_key, []))
+    try:
+        expected = announced_auction_keys(day)
+    except (requests.RequestException, ValueError, TypeError, KeyError):
+        expected = set()
+    # Do not stop after bills if a later coupon auction is also scheduled.
+    if expected and expected.issubset(seen):
+        st.success("Auction monitor: all announced results received.")
+        return
+    try:
+        results = poll_treasury_results()
+        today = results[results["auction_date"].dt.strftime("%Y-%m-%d").eq(day)] if not results.empty else results
+        received = set(today["cusip"].astype(str))
+        new = received - seen
+        if new:
+            st.session_state[session_key] = sorted(seen | received)
+            st.session_state["auction_monitor_notice"] = f"New Treasury auction results received: {len(new)}."
             load.clear()
-            load_tails.clear()
             st.rerun(scope="app")
+        if received:
+            st.caption("Auction monitor: results received; checking for any further releases.")
+        else:
+            st.caption("Auction monitor: awaiting TreasuryDirect results (checks every 15 seconds).")
+    except (requests.RequestException, ValueError, TypeError, KeyError) as exc:
+        st.warning("Auction monitor: TreasuryDirect temporarily unavailable; will retry.")
 
 
 st.title("US Treasury Auction Dashboard")
 st.caption("TreasuryDirect recent auction results + FiscalData historical archive | Cached for 5 minutes")
 scheduled_auction_refresh()
-st.caption("Automatic refresh: 16:40 and 18:03 UK time (GMT/BST), while this dashboard is open.")
+if st.session_state.get("auction_monitor_notice"):
+    st.success(st.session_state["auction_monitor_notice"])
+st.caption("Automatic result monitoring: 11:31 and 13:01 ET (normally 16:31 and 18:01 UK time), for up to one hour per window while open.")
 with st.sidebar:
     days = st.selectbox("Recent-auction history", [90,180,365,730,1825,3650], index=4, format_func=lambda n: f"{n} days" if n < 365 else f"{n // 365} years")
     benchmark_days = st.selectbox("Benchmark history (years)", [2,3,5,10], index=2)
